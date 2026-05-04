@@ -7,7 +7,7 @@ import time
 
 # --- CONFIGURATION & STYLING ---
 st.set_page_config(
-    page_title="Antigravity Fraud Command Center",
+    page_title="Fraud Detection Center",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded",

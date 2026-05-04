@@ -1,41 +1,45 @@
 {
   "annotations": { "list": [ { "builtIn": 1, "datasource": { "type": "grafana", "uid": "-- Grafana --" }, "enable": true, "hide": true, "name": "Annotations & Alerts", "type": "dashboard" } ] },
   "editable": true,
-  "fiscalYearStartMonth": 0,
-  "graphTooltip": 1,
-  "id": null,
-  "links": [],
-  "liveNow": false,
   "panels": [
     {
       "datasource": { "type": "prometheus", "uid": "Prometheus" },
-      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 0 },
       "id": 1,
-      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto" },
       "title": "Throughput (EPS)",
       "type": "stat",
-      "targets": [ { "expr": "sum(rate({__name__=~\".*StreamingQuery_processedRecords_total\"}[1m]))", "refId": "A" } ]
+      "targets": [ { "expr": "sum(rate({__name__=~\".*StreamingQuery_processedRecords_total.*\"}[1m])) or vector(0)", "refId": "A" } ]
     },
     {
       "datasource": { "type": "prometheus", "uid": "Prometheus" },
-      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
-      "id": 2,
-      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
-      "title": "Avg Batch Duration (ms)",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 0 },
+      "id": 4,
+      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto" },
+      "title": "Spark CPU Usage (%)",
       "type": "stat",
-      "targets": [ { "expr": "avg({__name__=~\".*StreamingQuery_durationMs_sum\"}) / avg({__name__=~\".*StreamingQuery_durationMs_count\"})", "refId": "A" } ]
+      "targets": [ { "expr": "sum(rate({__name__=~\".*cpuTime.*\"}[1m])) / 1000000 or vector(0)", "refId": "A" } ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 0 },
+      "id": 5,
+      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto" },
+      "title": "JVM Heap Memory (MB)",
+      "type": "stat",
+      "targets": [ { "expr": "sum({__name__=~\".*jvm_heap_used.*\"}) / 1048576 or vector(0)", "refId": "A" } ]
     },
     {
       "datasource": { "type": "prometheus", "uid": "Prometheus" },
       "gridPos": { "h": 10, "w": 24, "x": 0, "y": 6 },
       "id": 3,
-      "title": "Processing Performance Timeline",
+      "title": "System Resources & Performance",
       "type": "timeseries",
       "targets": [
-        { "expr": "sum(rate({__name__=~\".*StreamingQuery_processedRecords_total\"}[1m]))", "legendFormat": "Throughput (EPS)", "refId": "A" },
-        { "expr": "avg({__name__=~\".*StreamingQuery_durationMs_sum\"} / 1000)", "legendFormat": "Latency (sec)", "refId": "B" }
+        { "expr": "sum(rate({__name__=~\".*StreamingQuery_processedRecords_total.*\"}[1m]))", "legendFormat": "Throughput (EPS)", "refId": "A" },
+        { "expr": "sum(rate({__name__=~\".*cpuTime.*\"}[1m])) / 1000000", "legendFormat": "CPU Usage (%)", "refId": "B" }
       ],
-      "options": { "legend": { "displayMode": "table", "placement": "bottom" } }
+      "options": { "legend": { "displayMode": "table", "placement": "right" } }
     }
   ],
   "refresh": "5s",
@@ -43,5 +47,5 @@
   "style": "dark",
   "title": "Fraud Detection Metrics v4",
   "uid": "fraud-detection-metrics",
-  "version": 5
+  "version": 7
 }
