@@ -150,12 +150,25 @@ def main():
     # --- DATA TABLE ---
     st.subheader("🚨 Live Alert Feed")
     if not filtered_df.empty:
+        # Highlighting logic
+        def highlight_fraud(row):
+            if row.severity == 'high':
+                return ['background-color: rgba(255, 75, 75, 0.2)'] * len(row)
+            elif row.severity == 'medium':
+                return ['background-color: rgba(255, 165, 0, 0.1)'] * len(row)
+            return [''] * len(row)
+
+        display_df = filtered_df.copy()
+        display_df['status'] = display_df['severity'].apply(lambda x: "🔴 CRITICAL" if x == 'high' else ("🟠 WARNING" if x == 'medium' else "🔵 INFO"))
+        
         st.dataframe(
-            filtered_df[['alert_ts', 'account_id', 'txn_type', 'amount', 'risk_score', 'severity']].sort_values('alert_ts', ascending=False),
+            display_df[['status', 'alert_ts', 'account_id', 'txn_type', 'amount', 'risk_score', 'ml_score']].sort_values('alert_ts', ascending=False).style.apply(highlight_fraud, axis=1),
             use_container_width=True,
             hide_index=True,
             column_config={
-                "risk_score": st.column_config.ProgressColumn("Risk Score", min_value=0, max_value=1),
+                "status": "Status",
+                "risk_score": st.column_config.ProgressColumn("Rule Score", min_value=0, max_value=1),
+                "ml_score": st.column_config.ProgressColumn("ML Score", min_value=0, max_value=1),
                 "amount": st.column_config.NumberColumn("Amount ($)", format="$ %d"),
                 "alert_ts": "Time"
             }

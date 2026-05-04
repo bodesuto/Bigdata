@@ -79,16 +79,6 @@ def main() -> int:
     commands = [
         [
             sys.executable,
-            str(ROOT / "scripts" / "split_logical_sources.py"),
-            "--csv-path",
-            args.csv_path,
-            "--output-dir",
-            args.source_dir,
-            "--max-events",
-            str(args.max_events),
-        ],
-        [
-            sys.executable,
             str(ROOT / "scripts" / "publish_risk_rules.py"),
             "--bootstrap-servers",
             args.bootstrap_servers,

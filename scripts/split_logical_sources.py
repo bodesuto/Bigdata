@@ -18,7 +18,7 @@ def parse_args() -> argparse.Namespace:
         description="Split the integrated PaySim CSV into 3 independent logical source CSVs."
     )
     parser.add_argument("--csv-path", default=str(PipelineConfig().default_csv_path))
-    parser.add_argument("--output-dir", default=str(ROOT / "data" / "logical_sources"))
+    parser.add_argument("--output-dir", default=str(ROOT / "Data" / "logical_sources"))
     parser.add_argument("--max-events", type=int, default=None)
     parser.add_argument("--json-out", help="Optional path to save the split summary as JSON.")
     return parser.parse_args()

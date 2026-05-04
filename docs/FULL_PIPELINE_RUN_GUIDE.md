@@ -61,8 +61,8 @@ python scripts/publish_logical_sources_parallel.py --rate 100
 
 ## 🕵️ BƯỚC 5: KIỂM TRA KẾT QUẢ
 
-1.  **Dashboard chính:** Mở `http://localhost:8501`. Bạn sẽ thấy số lượng Alert tăng dần liên tục.
-2.  **Grafana:** Mở `http://localhost:3001`. Quan sát biểu đồ **Throughput (EPS)**. Với `--rate 100`, biểu đồ sẽ duy trì ở mức ổn định quanh con số 100.
+1.  **Dashboard chính:** Mở `http://localhost:8501`. Quan sát cột **Rule Score** (Logic luật) và **ML Score** (Logic AI) để so sánh độ chính xác.
+2.  **Grafana:** Mở `http://localhost:3001`. Quan sát biểu đồ **Throughput (EPS)** và **Avg Batch Duration (ms)**. Nếu Latency tăng cao > 5000ms, bạn nên cân nhắc giảm `--rate`.
 3.  **Logs:** Kiểm tra xem Spark có bị quá tải không:
     ```powershell
     docker logs -f spark-fraud-detection

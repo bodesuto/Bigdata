@@ -24,7 +24,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bootstrap-servers", default="localhost:9092")
     parser.add_argument(
         "--source-dir",
-        default=str(ROOT / "data" / "logical_sources"),
+        default=str(ROOT / "Data" / "logical_sources"),
         help=f"Thu muc chua file {RECEIVER_STATE_SOURCE_FILENAME}",
     )
     parser.add_argument("--rate", type=float, default=100.0, help="Correlated events per second. Use 0 for max speed.")
@@ -54,10 +54,12 @@ def main() -> int:
         for payload in iter_receiver_state_source_payloads(args.source_dir, limit=args.max_events):
             producer.send(RECEIVER_STATE_TOPIC, key=payload["source_event_id"], value=payload)
             published += 1
+            if published % 100 == 0:
+                print(f"Progress: Published {published} events...", flush=True)
             if delay:
                 time.sleep(delay)
         producer.flush()
-        print(f"Published {published} receiver state source events to {RECEIVER_STATE_TOPIC}.")
+        print(f"FINAL: Published {published} receiver state source events to {RECEIVER_STATE_TOPIC}.", flush=True)
         return 0
     finally:
         producer.close()

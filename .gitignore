@@ -1,2 +1,4 @@
 Data/*.zip
 Data/**/*.csv
+**/__pycache__/
+*.pyc
