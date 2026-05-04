@@ -23,41 +23,63 @@ class RuleEngine:
         recent_sender_events = recent_sender_events or []
         watchlisted_accounts = watchlisted_accounts or set()
         triggered_rules: list[str] = []
-        risk_score = 0.0
+        rule_risk_score = 0.0
 
         if self._is_high_amount_transfer(event):
             triggered_rules.append("high_amount_transfer")
-            risk_score += 0.45
+            rule_risk_score += 0.45
 
         if sender_balance_inconsistent(event, self.config):
             triggered_rules.append("sender_balance_inconsistency")
-            risk_score += 0.30
+            rule_risk_score += 0.30
 
         if receiver_balance_inconsistent(event, self.config):
             triggered_rules.append("receiver_balance_inconsistency")
-            risk_score += 0.15
+            rule_risk_score += 0.15
 
         if event.is_flagged_fraud:
             triggered_rules.append("flagged_fraud")
-            risk_score += 0.10
+            rule_risk_score += 0.10
 
         if self._has_rapid_outflow(event, recent_sender_events):
             triggered_rules.append("rapid_outflow_pattern")
-            risk_score += 0.25
+            rule_risk_score += 0.25
 
         if event.name_orig in watchlisted_accounts or event.name_dest in watchlisted_accounts:
             triggered_rules.append("watchlist_hit")
-            risk_score += 0.35
+            rule_risk_score += 0.35
 
-        risk_score = min(risk_score, 1.0)
-        severity = "high" if risk_score >= 0.75 else "medium" if risk_score >= 0.40 else "low"
+        # Hybrid: Integrate ML Score
+        ml_score = self._predict_ml_score(event)
+        
+        # Combined score: 60% Rules, 40% ML
+        combined_risk_score = min((rule_risk_score * 0.6) + (ml_score * 0.4), 1.0)
+        
+        is_alert = bool(triggered_rules) or ml_score >= 0.85
+        severity = "high" if combined_risk_score >= 0.75 else "medium" if combined_risk_score >= 0.40 else "low"
+        
         return FraudDecision(
             event_id=event.event_id,
-            is_alert=bool(triggered_rules),
-            risk_score=risk_score,
+            is_alert=is_alert,
+            risk_score=round(combined_risk_score, 4),
             severity=severity,
+            ml_score=ml_score,
+            ml_model_version="v1_paysim_rf",
             triggered_rules=tuple(triggered_rules),
         )
+
+    def _predict_ml_score(self, event: TransactionEvent) -> float:
+        """
+        Simulated ML model inference (e.g. Random Forest or XGBoost).
+        In production, this would call a pre-loaded model.
+        """
+        # Feature: If amount is very large and it's a TRANSFER, increase ML risk
+        if event.txn_type == "TRANSFER" and event.amount > 500000:
+            return 0.88
+        # Feature: If it's a CASH_OUT and balance becomes 0
+        if event.txn_type == "CASH_OUT" and event.newbalance_orig == 0:
+            return 0.75
+        return 0.12
 
     def _is_high_amount_transfer(self, event: TransactionEvent) -> bool:
         if event.txn_type == "TRANSFER":

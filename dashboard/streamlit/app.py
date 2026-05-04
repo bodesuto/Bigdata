@@ -1,107 +1,169 @@
-from __future__ import annotations
-
-import json
-from datetime import datetime
-
-import pandas as pd
-import redis
 import streamlit as st
+import pandas as pd
+import plotly.express as px
 from cassandra.cluster import Cluster
+from datetime import datetime
+import time
 
+# --- CONFIGURATION & STYLING ---
+st.set_page_config(
+    page_title="Antigravity Fraud Command Center",
+    page_icon="🛡️",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-st.set_page_config(page_title="Fraud Pipeline Dashboard", layout="wide")
+# Premium CSS for Glassmorphism & Modern UI
+st.markdown("""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap');
+    
+    html, body, [class*="css"] {
+        font-family: 'Inter', sans-serif;
+    }
+    
+    .stApp {
+        background: radial-gradient(circle at 10% 20%, rgb(10, 20, 30) 0%, rgb(0, 0, 0) 90%);
+        color: #E0E0E0;
+    }
+    
+    /* Metric Card Styling */
+    div[data-testid="stMetricValue"] {
+        font-size: 2.2rem !important;
+        font-weight: 800 !important;
+        color: #00D2FF !important;
+    }
+    
+    /* DataFrame Styling */
+    .stDataFrame {
+        border-radius: 10px;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    /* Headers */
+    h1, h2, h3 {
+        color: #FFFFFF !important;
+        letter-spacing: -1px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
-CASSANDRA_HOST = "cassandra"
-CASSANDRA_PORT = 9042
-KEYSPACE = "fraud_detection"
-REDIS_HOST = "redis"
-REDIS_PORT = 6379
-
-
-@st.cache_resource(show_spinner=False)
-def cassandra_session():
-    cluster = Cluster([CASSANDRA_HOST], port=CASSANDRA_PORT)
+# --- DATA ACCESS LAYER ---
+@st.cache_resource
+def get_cassandra_session():
     try:
-        session = cluster.connect(KEYSPACE)
+        # Note: 'cassandra' is the hostname in docker-compose, but from local host it's 'localhost'
+        # We try localhost first, then fallback to 'cassandra' for in-docker execution
+        host = 'localhost'
+        cluster = Cluster([host], port=9042)
+        session = cluster.connect('fraud_detection')
+        return session
     except Exception:
-        cluster.shutdown()
-        return None, None
-    return cluster, session
+        try:
+            cluster = Cluster(['cassandra'], port=9042)
+            session = cluster.connect('fraud_detection')
+            return session
+        except Exception as e:
+            st.error(f"Failed to connect to Cassandra: {e}")
+            return None
 
-
-@st.cache_resource(show_spinner=False)
-def redis_client():
-    return redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
-
-
-def load_alerts(limit: int = 50) -> pd.DataFrame:
-    _, session = cassandra_session()
-    if session is None:
+def load_alerts():
+    session = get_cassandra_session()
+    if not session: return pd.DataFrame()
+    
+    query = "SELECT * FROM alerts_by_account LIMIT 1000"
+    try:
+        rows = session.execute(query)
+        df = pd.DataFrame(list(rows))
+        if not df.empty:
+            df['alert_ts'] = pd.to_datetime(df['alert_ts'])
+        return df
+    except Exception:
         return pd.DataFrame()
-    rows = session.execute(
-        """
-        SELECT account_id, alert_date, alert_ts, alert_id, event_id, name_dest, txn_type,
-               amount, risk_score, severity, triggered_rules
-        FROM alerts_by_account
-        LIMIT %s
-        """,
-        (limit,),
-    )
-    return pd.DataFrame(list(rows))
 
+# --- MAIN DASHBOARD ---
+def main():
+    # Sidebar
+    with st.sidebar:
+        st.image("https://img.icons8.com/fluency/96/shield.png", width=80)
+        st.title("Control Panel")
+        refresh_rate = st.slider("Auto-refresh (seconds)", 5, 60, 10)
+        severity_filter = st.multiselect("Filter Severity", ["high", "medium", "low"], default=["high", "medium"])
+        st.divider()
+        st.info("System Status: **ACTIVE** 🟢")
 
-def load_metrics(limit: int = 100) -> pd.DataFrame:
-    _, session = cassandra_session()
-    if session is None:
-        return pd.DataFrame()
-    rows = session.execute(
-        """
-        SELECT window_type, window_start, window_end, event_count, fraud_count, total_amount, fraud_rate
-        FROM metrics_by_window
-        LIMIT %s
-        """,
-        (limit,),
-    )
-    return pd.DataFrame(list(rows))
+    # Header
+    col_header, col_status = st.columns([4, 1])
+    with col_header:
+        st.title("🛡️ Fraud Detection Command Center")
+        st.markdown("*Real-time Hybrid Intelligence Pipeline Monitoring*")
+    
+    with col_status:
+        st.write(f"**Last Sync:** {datetime.now().strftime('%H:%M:%S')}")
 
+    # Load Data
+    alerts_df = load_alerts()
 
-def load_recent_alert_cache(limit: int = 20) -> list[dict]:
-    client = redis_client()
-    values = client.lrange("latest_alerts", 0, limit - 1)
-    return [json.loads(item) for item in values]
-
-
-st.title("Real-time Fraud Detection Dashboard")
-st.caption("Local dashboard reading durable data from Cassandra and hot alerts from Redis.")
-
-left, right = st.columns(2)
-alerts_df = load_alerts()
-metrics_df = load_metrics()
-redis_alerts = load_recent_alert_cache()
-
-with left:
-    st.subheader("Alert Summary")
     if alerts_df.empty:
-        st.info("No alerts stored in Cassandra yet.")
-    else:
-        st.metric("Alerts in Cassandra", len(alerts_df))
-        st.metric("High Severity Alerts", int((alerts_df["severity"] == "high").sum()))
-        st.dataframe(alerts_df, use_container_width=True)
+        st.warning("📡 Waiting for live stream data... Please ensure Spark Job and Ingestion are running.")
+        time.sleep(5)
+        st.rerun()
+        return
 
-with right:
-    st.subheader("Window Metrics")
-    if metrics_df.empty:
-        st.info("No metrics stored yet.")
-    else:
-        st.metric("Metric Rows", len(metrics_df))
-        if "fraud_rate" in metrics_df:
-            st.line_chart(metrics_df[["fraud_rate"]])
-        st.dataframe(metrics_df, use_container_width=True)
+    # Filter
+    filtered_df = alerts_df[alerts_df['severity'].isin(severity_filter)] if not alerts_df.empty else alerts_df
 
-st.subheader("Hot Alerts from Redis")
-if not redis_alerts:
-    st.info("Redis cache is empty.")
-else:
-    st.json(redis_alerts)
+    # --- METRICS ---
+    m1, m2, m3, m4 = st.columns(4)
+    with m1: st.metric("Total Alerts", len(alerts_df))
+    with m2: 
+        high_risk = len(alerts_df[alerts_df['severity'] == 'high'])
+        st.metric("High Severity", high_risk, delta=f"{high_risk/len(alerts_df)*100:.1f}%" if len(alerts_df)>0 else "0%")
+    with m3: st.metric("Avg Risk Score", f"{alerts_df['risk_score'].mean():.2f}")
+    with m4: st.metric("At-Risk Volume", f"${alerts_df['amount'].sum():,.0f}")
 
-st.caption(f"Refreshed at {datetime.utcnow().isoformat()}Z")
+    st.divider()
+
+    # --- CHARTS ---
+    c1, c2 = st.columns([3, 2])
+    
+    with c1:
+        st.subheader("📈 Risk Timeline")
+        if not filtered_df.empty:
+            fig_timeline = px.scatter(
+                filtered_df, x="alert_ts", y="risk_score", color="severity", 
+                size="amount", hover_data=["account_id"],
+                color_discrete_map={"high": "#FF4B4B", "medium": "#FFA500", "low": "#00D2FF"},
+                template="plotly_dark"
+            )
+            fig_timeline.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=0,r=0,t=20,b=0))
+            st.plotly_chart(fig_timeline, use_container_width=True)
+    
+    with c2:
+        st.subheader("📊 Transaction Types")
+        if not filtered_df.empty:
+            fig_pie = px.pie(filtered_df, names='txn_type', values='amount', hole=0.4, template="plotly_dark")
+            fig_pie.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=0,r=0,t=20,b=0))
+            st.plotly_chart(fig_pie, use_container_width=True)
+
+    # --- DATA TABLE ---
+    st.subheader("🚨 Live Alert Feed")
+    if not filtered_df.empty:
+        st.dataframe(
+            filtered_df[['alert_ts', 'account_id', 'txn_type', 'amount', 'risk_score', 'severity']].sort_values('alert_ts', ascending=False),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "risk_score": st.column_config.ProgressColumn("Risk Score", min_value=0, max_value=1),
+                "amount": st.column_config.NumberColumn("Amount ($)", format="$ %d"),
+                "alert_ts": "Time"
+            }
+        )
+
+    # Refresh
+    time.sleep(refresh_rate)
+    st.rerun()
+
+if __name__ == "__main__":
+    main()

@@ -14,8 +14,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Bootstrap the local stack with Kafka topics, rules, and sample events.")
     parser.add_argument("--bootstrap-servers", default="localhost:9092")
     parser.add_argument("--csv-path", default=str(ROOT / "Data" / "archive (2)" / "PS_20174392719_1491204439457_log.csv"))
-    parser.add_argument("--source-dir", default=str(ROOT / "data" / "logical_sources"))
-    parser.add_argument("--max-events", type=int, default=50)
+    parser.add_argument("--source-dir", default=str(ROOT / "Data" / "logical_sources"))
+    parser.add_argument("--max-events", type=int, default=0)
     parser.add_argument("--rate", type=float, default=20.0)
     parser.add_argument(
         "--producer-mode",

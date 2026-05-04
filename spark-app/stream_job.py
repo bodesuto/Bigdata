@@ -40,13 +40,13 @@ from fraud_pipeline.topics import RECEIVER_STATE_TOPIC, SENDER_STATE_TOPIC, TRAN
 
 
 APP_NAME = "RealtimeFraud3StreamIntegration"
-WATERMARK_DELAY = "5 minutes"
-JOIN_TOLERANCE = "5 seconds"
+WATERMARK_DELAY = "10 minutes"
+JOIN_TOLERANCE = "30 seconds"
 TUMBLING_WINDOW = "5 minutes"
 SLIDING_WINDOW = "10 minutes"
 SLIDE_INTERVAL = "5 minutes"
 RULE_REFRESH_SECONDS = int(os.getenv("RISK_RULE_REFRESH_SECONDS", "0"))
-CHECKPOINT_ROOT = os.getenv("SPARK_CHECKPOINT_ROOT", "/tmp/spark_checkpoints")
+CHECKPOINT_ROOT = os.path.join(os.getenv("SPARK_CHECKPOINT_ROOT", "/tmp/spark_checkpoints"), "v4_clean")
 
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092")
 STARTING_OFFSETS = os.getenv("PIPELINE_STARTING_OFFSETS", "earliest")
@@ -65,7 +65,11 @@ def create_spark_session() -> SparkSession:
     return (
         SparkSession.builder.appName(APP_NAME)
         .config("spark.sql.session.timeZone", "UTC")
+        .config("spark.sql.streaming.statefulOperator.allowMultiple", "true")
         .config("spark.sql.streaming.statefulOperator.checkCorrectness.enabled", "false")
+        .config("spark.sql.debug.maxToStringFields", "1000")
+        .config("spark.sql.streaming.checkpointLocation", f"{CHECKPOINT_ROOT}/metadata")
+        .config("spark.ui.prometheus.enabled", "true")
         .getOrCreate()
     )
 
@@ -208,8 +212,33 @@ def decode_json_stream(
         F.lit("invalid_timestamp").alias("error"),
         F.current_timestamp().alias("observed_at"),
     )
-    valid = projected.filter(~timestamp_invalid_condition).drop("raw_value", "source_key", "partition", "offset")
-    invalid = build_dead_letter_records(parse_invalid.unionByName(timestamp_invalid))
+    # Data Quality Check: Filter out obvious garbage before processing
+    quality_condition = (
+        ~(F.col("event_id").isNull() | (F.col("event_id") == ""))
+        & (F.col("step") >= 0)
+    )
+    
+    # Check for negative amounts if applicable (e.g., in transactions)
+    if "amount" in [f.name for f in schema.fields]:
+        quality_condition = quality_condition & (F.col("amount") >= 0)
+
+    valid_format = projected.filter(quality_condition)
+    quality_invalid = projected.filter(~quality_condition).select(
+        "source_topic",
+        "source_key",
+        "partition",
+        "offset",
+        "raw_value",
+        F.lit("data_quality_violation").alias("error"),
+        F.current_timestamp().alias("observed_at"),
+    )
+
+    valid = valid_format.drop("raw_value", "source_key", "partition", "offset")
+    # Apply watermark once here, on the primary timestamp column
+    if "event_time" in valid.columns:
+        valid = valid.withWatermark("event_time", WATERMARK_DELAY)
+        
+    invalid = build_dead_letter_records(parse_invalid.unionByName(timestamp_invalid).unionByName(quality_invalid))
     return valid, invalid
 
 
@@ -232,8 +261,6 @@ def build_integrated_stream(
             F.col("isFlaggedFraud").alias("tx_is_flagged_fraud"),
             F.col("schema_version").alias("tx_schema_version"),
         )
-        .withWatermark("tx_event_time", WATERMARK_DELAY)
-        .dropDuplicates(["tx_event_id"])
     )
     sender = (
         sender_updates.select(
@@ -245,8 +272,6 @@ def build_integrated_stream(
             F.col("oldbalanceOrg").alias("oldbalanceOrg"),
             F.col("newbalanceOrig").alias("newbalanceOrig"),
         )
-        .withWatermark("sender_event_time", WATERMARK_DELAY)
-        .dropDuplicates(["sender_event_id"])
     )
     receiver = (
         receiver_updates.select(
@@ -258,8 +283,6 @@ def build_integrated_stream(
             F.col("oldbalanceDest").alias("oldbalanceDest"),
             F.col("newbalanceDest").alias("newbalanceDest"),
         )
-        .withWatermark("receiver_event_time", WATERMARK_DELAY)
-        .dropDuplicates(["receiver_event_id"])
     )
 
     join_tolerance = F.expr(f"INTERVAL {JOIN_TOLERANCE.upper()}")
@@ -365,8 +388,6 @@ def build_integrated_stream(
             F.col("tx_is_flagged_fraud").alias("isFlaggedFraud"),
             F.col("tx_schema_version").alias("schema_version"),
         )
-        .withWatermark("event_time", WATERMARK_DELAY)
-        .dropDuplicates(["event_id"])
     )
 
     mismatch_dead_letters = candidates.filter(
@@ -520,8 +541,8 @@ def get_prepared_statements() -> dict[str, Any]:
             """
             INSERT INTO alerts_by_account (
               account_id, alert_date, alert_ts, alert_id, event_id, name_dest, txn_type,
-              amount, risk_score, severity, triggered_rules
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              amount, risk_score, severity, ml_score, ml_model_version, triggered_rules
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
         ),
         "insert_account_state": session.prepare(
@@ -732,6 +753,8 @@ def persist_alert(event: TransactionEvent, alert_payload: dict[str, Any]) -> Non
             event.amount,
             alert_payload["risk_score"],
             alert_payload["severity"],
+            alert_payload["ml_score"],
+            alert_payload["ml_model_version"],
             alert_payload["triggered_rules"],
         ),
     )

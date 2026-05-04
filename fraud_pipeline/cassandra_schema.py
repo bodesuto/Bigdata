@@ -27,11 +27,19 @@ def ensure_schema(host: str = "localhost", port: int = 9042, keyspace: str = "fr
               amount double,
               risk_score double,
               severity text,
+              ml_score double,
+              ml_model_version text,
               triggered_rules list<text>,
               PRIMARY KEY ((account_id, alert_date), alert_ts, alert_id)
             ) WITH CLUSTERING ORDER BY (alert_ts DESC)
             """
         )
+        # Ensure new columns exist for existing tables
+        try:
+            session.execute("ALTER TABLE alerts_by_account ADD ml_score double")
+            session.execute("ALTER TABLE alerts_by_account ADD ml_model_version text")
+        except Exception:
+            pass
         session.execute(
             """
             CREATE TABLE IF NOT EXISTS transactions_by_day (

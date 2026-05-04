@@ -41,6 +41,8 @@ class FraudDecision:
     is_alert: bool
     risk_score: float
     severity: str
+    ml_score: float = 0.0
+    ml_model_version: str = "v0"
     triggered_rules: tuple[str, ...] = field(default_factory=tuple)
 
 

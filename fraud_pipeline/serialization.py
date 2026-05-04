@@ -79,6 +79,8 @@ def fraud_decision_to_dict(event: TransactionEvent, decision: FraudDecision) -> 
         "amount": event.amount,
         "risk_score": decision.risk_score,
         "severity": decision.severity,
+        "ml_score": decision.ml_score,
+        "ml_model_version": decision.ml_model_version,
         "triggered_rules": list(decision.triggered_rules),
         "is_alert": decision.is_alert,
     }
