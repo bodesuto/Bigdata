@@ -301,6 +301,71 @@ Phần này giúp giám khảo đối chiếu nhanh các tính năng của hệ 
 
 ---
 
+## 🔧 12. Chi Tiết Lưu Trữ & Logic Nghiệp Vụ (Storage & Logic Deep Dive)
+
+Phần này giải thích cách hệ thống tận dụng tối đa sức mạnh của từng loại cơ sở dữ liệu.
+
+### 12.1. Redis: Tầng Cache & Chống trùng lặp (Deduplication)
+Hệ thống sử dụng Redis cho 3 mục đích chiến lược:
+- **Alert Deduplication:** Sử dụng lệnh `SET key "1" EX 86400 NX`. Nếu một cảnh báo đã tồn tại, lệnh này sẽ trả về False, giúp Spark không gửi trùng cảnh báo vào Kafka/UI.
+- **Hot Account State:** Lưu trữ 100 giao dịch gần nhất của mỗi tài khoản dưới dạng List/Hash để `RuleEngine` tính toán tần suất giao dịch ngay lập tức.
+- **Real-time Alert Cache:** Lưu payload của 100 cảnh báo mới nhất để Dashboard Streamlit có thể hiển thị mà không cần truy vấn vào Cassandra (giảm độ trễ từ giây xuống mili-giây).
+
+### 12.2. Cassandra: Tầng Lưu Trữ Vĩnh Viễn (Persistence)
+Thiết kế bảng trong Cassandra được tối ưu cho các truy vấn dạng **Time-series**:
+- **Bảng `alerts_by_account`:** Sử dụng `account_id` làm **Partition Key** và `alert_ts` làm **Clustering Column**. Điều này giúp việc lấy lịch sử gian lận của 1 khách hàng diễn ra cực nhanh dù dữ liệu có hàng tỷ dòng.
+- **Bảng `metrics_by_window`:** Lưu trữ kết quả của các phép tính Windowing (Sliding/Tumbling). Giúp chúng ta có thể vẽ biểu đồ lịch sử EPS/Fraud Rate trong quá khứ.
+
+### 12.3. Module `fraud_pipeline`: Bộ não nghiệp vụ
+- **Rule Engine Pattern:** Hệ thống sử dụng mô hình **Strategy Pattern**. Mỗi Rule (như `HighAmountRule`) là một lớp độc lập. Khi cần thêm luật mới, bạn chỉ cần tạo file mới mà không làm ảnh hưởng đến code cũ.
+- **Serialization:** Sử dụng hàm `dumps/loads` tùy chỉnh để xử lý các kiểu dữ liệu đặc biệt như `datetime` và `UUID` mà thư viện JSON mặc định của Python thường gặp lỗi.
+
+### 12.4. Orchestration Scripts: Tự động hóa vận hành
+- **`bootstrap_local_stack.py`:** Không chỉ tạo bảng, script này còn chứa logic kiểm tra trạng thái Kafka/Cassandra. Nó đảm bảo các dịch vụ đã thực sự sẵn sàng (Healthy) trước khi bắt đầu bơm dữ liệu.
+
+---
+
+## 🔍 13. Hướng Dẫn Truy Vấn & Kiểm Tra Dữ Liệu (Data Inspection Guide)
+
+Nếu bạn muốn kiểm tra xem dữ liệu có thực sự được lưu vào Database hay không, hãy sử dụng các lệnh sau:
+
+### 13.1. Truy vấn Cassandra (Lưu trữ vĩnh viễn)
+Mở Terminal và chạy lệnh sau để vào giao diện dòng lệnh của Cassandra:
+```powershell
+docker exec -it cassandra cqlsh
+```
+Sau đó, chạy các câu lệnh SQL (CQL) sau:
+```sql
+USE fraud_detection;
+-- Xem 10 cảnh báo mới nhất
+SELECT * FROM alerts_by_account LIMIT 10;
+-- Xem thống kê theo từng cửa sổ thời gian
+SELECT * FROM metrics_by_window LIMIT 5;
+```
+
+### 13.2. Truy vấn Redis (Bộ nhớ đệm Real-time)
+Để kiểm tra các trạng thái "nóng" và cache, chạy lệnh:
+```powershell
+docker exec -it redis redis-cli
+```
+Các lệnh hữu ích:
+```bash
+# Xem danh sách tất cả các Key đang lưu
+KEYS *
+# Xem nội dung của một cảnh báo cụ thể (Copy key từ lệnh trên)
+GET fraud_alert:<alert_id>
+# Kiểm tra xem ID này đã được đánh dấu là đã publish chưa
+GET published_alert:<run_id>:<event_id>
+```
+
+### 13.3. Xem dữ liệu trên Grafana Explorer
+Nếu bạn muốn soi các chỉ số kỹ thuật dưới dạng đồ thị thô:
+1. Truy cập `http://localhost:3001/explore`.
+2. Chọn Data Source là **Prometheus**.
+3. Gõ query: `sum(rate({__name__=~".*StreamingQuery_processedRecords_total.*"}[1m]))`.
+
+---
+
 ## 🛠️ 6. Bắt Bệnh Hệ Thống (Troubleshooting)
 
 | Lỗi thường gặp | Cách xử lý |
