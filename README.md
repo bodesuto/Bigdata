@@ -1,10 +1,21 @@
-# 🛡️ Real-time Fraud Detection Pipeline: The Ultimate Knowledge Base
+# 🛡️ Real-time Fraud Detection Pipeline: Technical Deep Dive
 
 [![Spark](https://img.shields.io/badge/Spark-3.5.0-orange?style=flat-square&logo=apachespark)](https://spark.apache.org/)
 [![Kafka](https://img.shields.io/badge/Kafka-3.5.1-black?style=flat-square&logo=apachekafka)](https://kafka.apache.org/)
 [![Cassandra](https://img.shields.io/badge/Cassandra-4.1.3-blue?style=flat-square&logo=apachecassandra)](https://cassandra.apache.org/)
 
-Hệ thống này không chỉ là một tập hợp các Script, nó là một giải pháp kiến trúc giải quyết bài toán **"Tin cậy trong dữ liệu lớn"**. Dưới đây là bản đồ tư duy và hướng dẫn chuyên sâu cho toàn bộ Pipeline.
+Tài liệu này cung cấp cái nhìn chi tiết về cấu trúc thượng tầng và logic nội tại của hệ thống phát hiện gian lận real-time.
+
+---
+
+## 📚 0. Thuật Ngữ Cho Người Mới (Glossary)
+
+Nếu bạn là sinh viên mới bắt đầu, hãy đọc phần này trước:
+- **Streaming (Dòng dữ liệu):** Dữ liệu chảy liên tục như vòi nước, không dừng lại (khác với Batch là dữ liệu tĩnh trong file).
+- **Kafka:** Giống như một cái tủ bưu điện. Người gửi bỏ thư vào, người nhận lấy thư ra. Giúp các hệ thống không cần chờ đợi nhau.
+- **Spark:** Một cỗ máy tính toán cực nhanh, có thể xử lý hàng triệu phép tính mỗi giây.
+- **Join:** Phép nối các bảng dữ liệu lại với nhau (như trong SQL) nhưng thực hiện trên dữ liệu đang chảy.
+- **Latency (Độ trễ):** Thời gian từ lúc giao dịch xảy ra đến lúc hiện cảnh báo. Mục tiêu của chúng ta là càng nhỏ càng tốt (< 2 giây).
 
 ---
 
@@ -35,77 +46,171 @@ mindmap
 
 ---
 
-## 🏗️ 2. Giải Thích Ý Nghĩa Các Thành Phần (The "Why")
+## 🏗️ 2. Hành Trình Của Dữ Liệu (Data Life Cycle)
 
-### 📡 2.1. Apache Kafka: Hệ thần kinh trung ương
-- **Ý nghĩa:** Trong Big Data, dữ liệu đến từ hàng nghìn nguồn. Kafka đóng vai trò là "vùng đệm". 
-- **Tại sao dùng nó?** Nếu Spark bị sập hoặc bảo trì, Kafka sẽ giữ lại dữ liệu. Khi Spark sống lại, nó sẽ đọc tiếp từ vị trí cũ (Checkpoint), không bị mất bất kỳ giao dịch nào.
+Sơ đồ dưới đây mô tả cách một giao dịch được xử lý qua các tầng từ lúc phát sinh đến khi được cảnh báo:
 
-### 🧠 2.2. Apache Spark: Bộ não phân tích
-- **Ý nghĩa:** Xử lý hàng triệu bản ghi mỗi giây (Low Latency). 
-- **Cơ chế Watermarking:** Đây là chìa khóa. Trong thực tế, mạng có thể bị lag, dữ liệu đến muộn. Watermark nói với Spark rằng: "Hãy đợi dữ liệu này 10 phút, nếu sau 10 phút nó không đến thì mới bỏ qua". Điều này đảm bảo tính chính xác tuyệt đối.
+```mermaid
+sequenceDiagram
+    participant CSV as Data Source (CSV)
+    participant Prod as Parallel Producers
+    participant Kafka as Kafka Cluster
+    participant Spark as Spark Structured Streaming
+    participant DB as Cassandra/Redis
+    participant UI as Streamlit Dashboard
 
-### 🗄️ 2.3. Cassandra & Redis: Bộ nhớ dài hạn và ngắn hạn
-- **Cassandra (Long-term):** Giống như một cuốn sổ cái khổng lồ. Dùng để lưu vết gian lận phục vụ việc tra soát sau này. Nó cực mạnh khi cần ghi dữ liệu liên tục (High Write Throughput).
-- **Redis (Short-term):** Giống như bộ nhớ đệm. Dùng để Dashboard hiển thị ngay lập tức. Nếu Dashboard truy vấn thẳng vào Cassandra hàng triệu dòng, nó sẽ bị chậm. Redis giải quyết vấn đề này.
+    CSV->>Prod: Split & Read rows
+    Prod->>Kafka: Publish to 3 Topics (JSON)
+    Kafka->>Spark: Consume Micro-batches
+    Note over Spark: 3-Way Interval Join & Scoring
+    Spark->>DB: Persist Alerts & States
+    DB->>UI: Real-time Query/Push
+    UI-->>User: Visual Alert (🔴 CRITICAL)
+```
+
+## 🏗️ 2. Kiến Trúc Hệ Thống Chi Tiết (Architecture Deep Dive)
+
+Hệ thống được thiết kế theo mô hình **Lambda-like Architecture** thu nhỏ, tập trung hoàn toàn vào lớp **Speed Layer** để đảm bảo thời gian phản hồi gần như tức thì.
+
+### 2.1. Tầng Ingestion (Dẫn nạp)
+- **Logic:** Sử dụng `publish_logical_sources_parallel.py` để đẩy dữ liệu vào 3 Topics Kafka độc lập.
+- **Ý nghĩa:** Việc tách biệt 3 nguồn dữ liệu (Giao dịch, Trạng thái người gửi, Trạng thái người nhận) giúp hệ thống mô phỏng đúng môi trường thực tế ngân hàng - nơi các thông tin này thường nằm ở các DB khác nhau.
+
+### 2.2. Tầng Processing (Xử lý tập trung)
+- **Spark Structured Streaming:** Sử dụng cơ chế `Checkpointing` để đảm bảo tính **Exactly-once semantics**. Nếu hệ thống sập, nó sẽ phục hồi đúng bản ghi đang xử lý dở.
+- **Interval Join:** Đây là kỹ thuật khó nhất. Spark sẽ duy trì một "cửa sổ thời gian" trong RAM để đợi các mảnh ghép của một giao dịch đến đủ từ 3 phía trước khi đưa ra quyết định.
+
+### 2.3. Tầng Serving (Lưu trữ & Phục vụ)
+- **Hybrid Storage:** 
+    - **Cassandra:** Lưu trữ dạng **Time-series**. Cực kỳ tối ưu cho việc truy vấn lịch sử cảnh báo theo thời gian của một tài khoản.
+    - **Redis:** Lưu trữ **Key-Value**. Dùng để lưu trạng thái "nóng" (ví dụ: tài khoản X đang bị theo dõi đặc biệt) để Spark truy xuất trong vài mili giây.
 
 ---
 
-## 🌊 3. Giải Thích Logic Tích Hợp (The Integration Logic)
+## ⚙️ 3. Spark Processing: Cơ Chế Tích Hợp & Xử Lý Dữ Liệu
 
-### 3.1. 3-Way Interval Join là gì?
-Một giao dịch gian lận chỉ lộ diện khi ta biết:
-1. **Giao dịch:** A chuyển cho B 100 triệu.
-2. **Trạng thái A:** Trước đó A chỉ có 101 triệu (Rút gần hết).
-3. **Trạng thái B:** Tài khoản B vừa mới lập được 2 tiếng.
+Đây là phần "bộ não" của toàn bộ dự án. Spark thực hiện quy trình 4 giai đoạn trong mỗi Micro-batch:
 
-Hệ thống của chúng ta **Join (Kết nối)** 3 luồng tin nhắn này lại dựa trên thời gian. Chúng ta cho phép chúng lệch nhau 30 giây (`JOIN_TOLERANCE`) để đảm bảo dù tin nhắn nào đến trước, đến sau thì Spark vẫn ghép đúng bộ 3 thông tin này lại.
+### 3.1. Quy trình xử lý bên trong Spark
 
-### 3.2. Hybrid Scoring (Trí tuệ hỗn hợp)
-- **Rule Engine (Cứng):** Nếu giao dịch > 500tr -> Cảnh báo ngay.
-- **ML Score (Mềm):** AI dự đoán xác suất gian lận dựa trên hành vi.
-- **Kết quả:** Trên Dashboard bạn sẽ thấy cả 2 con số này để người vận hành (Analyst) có cái nhìn đa chiều nhất.
+```mermaid
+flowchart LR
+    A[Kafka Source] --> B{Decode JSON}
+    B -- Hợp lệ --> C[Interval Join 1]
+    B -- Lỗi --> DLQ[Dead Letter Queue]
+    C --> D[Interval Join 2]
+    D --> E[[Rule Engine Evaluation]]
+    E --> F{Is Fraud?}
+    F -- Yes --> G[Persist to Cassandra]
+    F -- Yes --> H[Update Redis Cache]
+    F -- Yes --> I[Publish to Kafka Alert Topic]
+    F -- No --> J[Persist Transaction Only]
+```
+
+### 3.2. Giải mã & Làm sạch (Decode & Cleanse)
+Spark đọc dữ liệu thô từ Kafka dưới dạng JSON. Sử dụng hàm `decode_json_stream` để:
+- Áp dụng Schema tĩnh (`transaction_schema`, `sender_state_schema`).
+- Kiểm tra tính hợp lệ (Data Quality): Lọc bỏ các bản ghi có số tiền âm hoặc thiếu ID. Các bản ghi lỗi được đẩy vào **Dead Letter Queue (DLQ)**.
+
+### 3.2. Tích hợp 3 Luồng (3-Way Stream Integration)
+Thuật toán `build_integrated_stream` thực hiện phép nối chuỗi:
+1.  `Transactions` JOIN `Sender_State` trên `event_id` với khoảng thời gian +/- 30 giây.
+2.  Kết quả trên tiếp tục JOIN với `Receiver_State`.
+- **Tại sao dùng Interval Join?** Vì trong hệ thống phân tán, tin nhắn về số dư người nhận có thể đến Kafka chậm hơn tin nhắn giao dịch. Interval Join cho phép Spark "chờ" bản ghi đó trong một khoảng thời gian nhất định mà không làm tắc nghẽn luồng xử lý.
+
+### 3.3. Chấm điểm rủi ro (Scoring Logic)
+Sau khi có bức tranh đầy đủ về giao dịch, Spark gọi `RuleEngine`:
+- **Rule-based:** Kiểm tra các ngưỡng (Threshold) như: Chuyển tiền vượt hạn mức, rút tiền liên tục trong thời gian ngắn (Velocity check).
+- **ML-based:** Sử dụng Model để dự đoán xác suất gian lận. Kết quả là một điểm số rủi ro từ 0 đến 1.
+
+### 3.4. Ghi dữ liệu song song (Sinks)
+Sử dụng `foreachBatch` để thực hiện ghi đa mục tiêu:
+- Ghi vào **Cassandra** để lưu trữ lâu dài.
+- Ghi vào **Redis** để phục vụ Dashboard.
+- Đẩy Alert mới vào **Kafka Topic `fraud_alerts`** để các hệ thống khác (ví dụ: hệ thống khóa thẻ tự động) có thể tiêu thụ.
 
 ---
 
-## 🚀 4. Hướng Dẫn Vận Hành Chi Tiết (Detailed Operations)
+## 📦 4. Chi Tiết Các Module Trong Pipeline
 
-### Bước 1: Khởi động hệ thống
+Hệ thống được module hóa để dễ dàng bảo trì và mở rộng:
+
+### 4.1. `fraud_pipeline` (Lõi logic)
+- `models.py`: Định nghĩa các thực thể dữ liệu (Transaction, AccountState, FraudDecision).
+- `rules.py`: Chứa các quy tắc phát hiện gian lận (HighAmountRule, RapidOutflowRule).
+- `serialization.py`: Chuyển đổi dữ liệu giữa các định dạng (Dict, JSON, Object).
+
+### 4.2. `spark-app` (Thực thi Streaming)
+- `stream_job.py`: Script chính điều khiển toàn bộ Pipeline. Thiết lập các truy vấn streaming, định nghĩa Watermarks và kết nối các Sinks.
+- `Dockerfile`: Đóng gói môi trường Spark, Python và các Driver cần thiết (Kafka, Cassandra, Redis).
+
+### 4.3. `dashboard` (Hiển thị)
+- `app.py`: Ứng dụng Streamlit sử dụng phong cách **Glassmorphism**. Nó truy vấn trực tiếp Cassandra/Redis để hiển thị các "điểm nóng" gian lận với hiệu ứng màu sắc (Đỏ: Nguy hiểm, Cam: Cảnh báo).
+
+### 4.4. `scripts` (Tiện ích & Vận hành)
+- `bootstrap_local_stack.py`: Tự động hóa việc tạo Table, nạp Rule ban đầu.
+- `publish_logical_sources_parallel.py`: Producer hiệu năng cao, chạy đa luồng để bơm dữ liệu vào Kafka.
+
+### 4.5. Sơ đồ hạ tầng Docker (Deployment)
+
+```mermaid
+graph LR
+    subgraph "Docker Network"
+        K[Kafka:9092] <--> S[Spark App:4040]
+        S <--> C[Cassandra:9042]
+        S <--> R[Redis:6379]
+        P[Prometheus] --> S
+        G[Grafana:3001] --> P
+        ST[Streamlit:8501] --> C
+        ST --> R
+    end
+```
+
+---
+
+## 🚀 5. Hướng Dẫn Cài Đặt Cho Sinh Viên
+
+> [!CAUTION]
+> **Yêu cầu phần cứng:** Máy tính cần tối thiểu **8GB RAM** (Khuyến nghị 16GB). Hãy tắt các ứng dụng nặng khác trước khi chạy.
+
+### Bước 1: Chuẩn bị
+1. Cài đặt **Docker Desktop** (Dùng để chạy các phần mềm nặng mà không cần cài trực tiếp vào máy).
+2. Cài đặt **Python 3.9+**.
+
+### Bước 2: Khởi động hệ thống
 ```powershell
 docker-compose up -d
 ```
-> **Giải thích:** Lệnh này dựng lên toàn bộ "thành phố" Big Data (Kafka, Cassandra, Spark, Redis, Grafana).
+*Giải thích: Lệnh này sẽ tự động tải và chạy Kafka, Spark, Cassandra, Redis. Đợi khoảng 2-3 phút cho đến khi tất cả các biểu tượng trong Docker Desktop hiện màu xanh.*
 
-### Bước 2: Chia tách dữ liệu (Data Preparation)
-```powershell
-python scripts/split_logical_sources.py --csv-path "Data\archive (2)\PS_20174392719_1491204439457_log.csv" --output-dir "Data\logical_sources"
-```
-> **Giải thích:** Tệp 500MB là quá lớn để một script đẩy vào Kafka. Chúng ta xẻ nó ra thành 3 tệp nhỏ để mô phỏng 3 hệ thống ngân hàng độc lập.
-
-### Bước 3: Cấu hình hạ tầng (Bootstrap)
+### Bước 3: Nạp dữ liệu & Luật
 ```powershell
 python scripts/bootstrap_local_stack.py
 ```
-> **Giải thích:** Tạo bảng trong Cassandra và nạp 3 quy tắc rủi ro mẫu vào Kafka.
+*Giải thích: Tạo ra các "ngăn chứa" dữ liệu trong Database và nạp các luật bắt gian lận mẫu.*
 
-### Bước 4: Bơm dữ liệu toàn phần (Ingestion)
-```powershell
-python scripts/publish_logical_sources_parallel.py --rate 100
-```
-- **--rate 100:** Đẩy 100 giao dịch/giây. Bạn có thể tăng lên 500 nếu máy mạnh.
-- **Ý nghĩa:** Bạn sẽ thấy Log nhảy liên tục, đây là lúc dữ liệu thực sự "chảy" qua Pipeline.
+### Bước 4: Chạy Dashboard & Xem kết quả
+- Mở trình duyệt vào `http://localhost:8501` (Dashboard Streamlit).
+- Chạy script bơm dữ liệu: `python scripts/publish_logical_sources_parallel.py --rate 10`.
 
 ---
 
-## 🕵️ 5. Giám Sát & Quan Sát (Observability)
+## 🛠️ 6. Bắt Bệnh Hệ Thống (Troubleshooting)
 
-1. **Dashboard Doanh nghiệp (Streamlit):** `http://localhost:8501`
-   - Quan sát các dòng **🔴 CRITICAL**. 
-   - Ý nghĩa: Đây là kết quả cuối cùng của toàn bộ Pipeline.
-
-2. **Dashboard Kỹ thuật (Grafana):** `http://localhost:3001`
-   - Quan sát **EPS (Events Per Second)**: Nếu EPS > 0 nghĩa là Spark đang làm việc.
-   - Quan sát **CPU/RAM**: Nếu CPU quá 80%, bạn nên giảm `--rate` ở Bước 4.
+| Lỗi thường gặp | Cách xử lý |
+| :--- | :--- |
+| **Máy bị treo, đứng hình** | Giảm tham số `--rate` xuống còn 1 hoặc 2. |
+| **No data trên Grafana** | Đảm bảo Spark đang chạy bằng lệnh `docker logs -f spark-fraud-detection`. |
+| **Lỗi Connection Refused** | Đợi thêm 1 phút để các Database khởi động xong hoàn toàn. |
 
 ---
-*Bản tài liệu này là tài sản trí tuệ của dự án Big Data Fraud Detection v4.*
+
+## 🎓 7. Thử Thách Cho Bạn (Learning Challenges)
+
+Để hiểu sâu hơn, bạn hãy thử tự mình thực hiện các bài tập sau:
+1. **Thay đổi luật:** Mở file `fraud_pipeline/rules.py`, thử tăng ngưỡng `HighAmountRule` lên và xem Dashboard có bớt cảnh báo đi không.
+2. **Đổi màu giao diện:** Mở `dashboard/streamlit/app.py` và thử thay đổi màu sắc của các dòng cảnh báo.
+3. **Thêm Metrics:** Thử tìm cách hiển thị thêm tổng số tiền gian lận đã phát hiện lên Grafana.
+
+---
+*Tài liệu này được soạn thảo bởi Antigravity AI dành cho dự án Real-time Fraud Detection v4.*
