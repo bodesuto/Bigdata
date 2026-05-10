@@ -19,7 +19,6 @@ class TransactionEvent:
     oldbalance_dest: float
     newbalance_dest: float
     is_fraud: int
-    is_flagged_fraud: int
     schema_version: int = 1
 
 

@@ -29,7 +29,6 @@ Các cột chính:
 - `oldbalanceDest`
 - `newbalanceDest`
 - `isFraud`
-- `isFlaggedFraud`
 
 PaySim ban đầu là một bảng tích hợp sẵn. Tuy nhiên, để phù hợp với học phần tích hợp dữ liệu lớn, hệ thống hiện tại không xử lí trực tiếp theo kiểu một nguồn raw duy nhất đi vào Spark. Thay vào đó, bảng gốc được tách thành ba nguồn dữ liệu vật lý độc lập trước khi đưa lên Kafka.
 
@@ -150,7 +149,6 @@ Schema logic:
 - `nameOrig`
 - `nameDest`
 - `isFraud`
-- `isFlaggedFraud`
 - `schema_version`
 
 ### 6.2 `sender_state_topic`
@@ -296,7 +294,6 @@ Rule engine hiện có:
 - `high_amount_transfer`
 - `sender_balance_inconsistency`
 - `receiver_balance_inconsistency`
-- `flagged_fraud`
 - `rapid_outflow_pattern`
 - `watchlist_hit`
 

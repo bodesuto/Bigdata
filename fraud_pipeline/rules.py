@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import prod
 
 from .config import PipelineConfig
-from .features import receiver_balance_inconsistent, sender_balance_inconsistent
 from .models import FraudDecision, TransactionEvent
 
 
-HIGH_RISK_TYPES = {"TRANSFER", "CASH_OUT"}
+OUTBOUND_TYPES = {"TRANSFER", "CASH_OUT"}
+INBOUND_TYPES = {"TRANSFER", "CASH_IN"}
 
 
 @dataclass
@@ -18,46 +19,50 @@ class RuleEngine:
         self,
         event: TransactionEvent,
         recent_sender_events: list[TransactionEvent] | None = None,
+        recent_receiver_events: list[TransactionEvent] | None = None,
+        recent_inbound_events: list[TransactionEvent] | None = None,
+        known_counterparties: set[str] | None = None,
         watchlisted_accounts: set[str] | None = None,
     ) -> FraudDecision:
         recent_sender_events = recent_sender_events or []
-        watchlisted_accounts = watchlisted_accounts or set()
+        recent_receiver_events = recent_receiver_events or []
+        recent_inbound_events = recent_inbound_events or []
+        known_counterparties = known_counterparties or set()
         triggered_rules: list[str] = []
-        rule_risk_score = 0.0
+        weights: list[float] = []
 
-        if self._is_high_amount_transfer(event):
-            triggered_rules.append("high_amount_transfer")
-            rule_risk_score += 0.45
+        if self._is_account_drain_near_zero(event):
+            triggered_rules.append("account_drain_near_zero")
+            weights.append(self.config.account_drain_weight)
 
-        if sender_balance_inconsistent(event, self.config):
-            triggered_rules.append("sender_balance_inconsistency")
-            rule_risk_score += 0.30
+        if self._has_sender_fan_out_burst(event, recent_sender_events):
+            triggered_rules.append("sender_fan_out_burst")
+            weights.append(self.config.sender_fan_out_weight)
 
-        if receiver_balance_inconsistent(event, self.config):
-            triggered_rules.append("receiver_balance_inconsistency")
-            rule_risk_score += 0.15
+        if self._has_receiver_fan_in_burst(event, recent_receiver_events):
+            triggered_rules.append("receiver_fan_in_burst")
+            weights.append(self.config.receiver_fan_in_weight)
 
-        if event.is_flagged_fraud:
-            triggered_rules.append("flagged_fraud")
-            rule_risk_score += 0.10
+        if self._has_structured_split_transfer(event, recent_sender_events):
+            triggered_rules.append("structured_split_transfer")
+            weights.append(self.config.structured_split_weight)
 
-        if self._has_rapid_outflow(event, recent_sender_events):
-            triggered_rules.append("rapid_outflow_pattern")
-            rule_risk_score += 0.25
+        if self._is_new_counterparty_large_transfer(event, known_counterparties):
+            triggered_rules.append("new_counterparty_large_transfer")
+            weights.append(self.config.new_counterparty_weight)
 
-        if event.name_orig in watchlisted_accounts or event.name_dest in watchlisted_accounts:
-            triggered_rules.append("watchlist_hit")
-            rule_risk_score += 0.35
+        if self._has_cashout_after_inbound_chain(event, recent_inbound_events):
+            triggered_rules.append("cashout_after_inbound_chain")
+            weights.append(self.config.cashout_after_inbound_weight)
 
-        # Hybrid: Integrate ML Score
+        rule_risk_score = 1 - prod(1 - weight for weight in weights) if weights else 0.0
+
         ml_score = self._predict_ml_score(event)
-        
-        # Combined score: 60% Rules, 40% ML
+
         combined_risk_score = min((rule_risk_score * 0.6) + (ml_score * 0.4), 1.0)
-        
         is_alert = bool(triggered_rules) or ml_score >= 0.85
-        severity = "high" if combined_risk_score >= 0.75 else "medium" if combined_risk_score >= 0.40 else "low"
-        
+        severity = "high" if combined_risk_score >= 0.65 else "medium" if combined_risk_score >= 0.35 else "low"
+
         return FraudDecision(
             event_id=event.event_id,
             is_alert=is_alert,
@@ -68,37 +73,107 @@ class RuleEngine:
             triggered_rules=tuple(triggered_rules),
         )
 
+    # Cần sửa lại phần này ngay sau khi có models để đảm bảo tính nhất quán của pipeline, hiện tại chỉ là placeholderq
     def _predict_ml_score(self, event: TransactionEvent) -> float:
-        """
-        Simulated ML model inference (e.g. Random Forest or XGBoost).
-        In production, this would call a pre-loaded model.
-        """
-        # Feature: If amount is very large and it's a TRANSFER, increase ML risk
         if event.txn_type == "TRANSFER" and event.amount > 500000:
             return 0.88
-        # Feature: If it's a CASH_OUT and balance becomes 0
         if event.txn_type == "CASH_OUT" and event.newbalance_orig == 0:
             return 0.75
         return 0.12
 
-    def _is_high_amount_transfer(self, event: TransactionEvent) -> bool:
-        if event.txn_type == "TRANSFER":
-            return event.amount >= self.config.high_amount_transfer_threshold
-        if event.txn_type == "CASH_OUT":
-            return event.amount >= self.config.high_amount_cash_out_threshold
-        return False
-
-    def _has_rapid_outflow(self, event: TransactionEvent, recent_sender_events: list[TransactionEvent]) -> bool:
-        if not recent_sender_events:
+    def _is_account_drain_near_zero(self, event: TransactionEvent) -> bool:
+        if event.txn_type not in OUTBOUND_TYPES:
             return False
-        window_start = event.event_time.timestamp() - self.config.rapid_outflow_window_seconds
-        matching = [
+        if event.oldbalance_org < self.config.account_drain_min_balance_floor:
+            return False
+        if event.oldbalance_org <= 0:
+            return False
+        drain_ratio = event.amount / event.oldbalance_org
+        return (
+            drain_ratio >= self.config.account_drain_ratio_threshold
+            and event.newbalance_orig <= self.config.account_drain_near_zero_balance
+        )
+
+    def _matching_sender_window(self, event: TransactionEvent, recent_sender_events: list[TransactionEvent]) -> list[TransactionEvent]:
+        if event.txn_type not in OUTBOUND_TYPES:
+            return []
+        window_start = event.event_time.timestamp() - self.config.fan_out_window_seconds
+        return [
             item
             for item in recent_sender_events
             if item.name_orig == event.name_orig and item.event_time.timestamp() >= window_start
         ]
+
+    def _has_sender_fan_out_burst(self, event: TransactionEvent, recent_sender_events: list[TransactionEvent]) -> bool:
+        matching = self._matching_sender_window(event, recent_sender_events)
+        if not matching and event.txn_type not in OUTBOUND_TYPES:
+            return False
+        distinct_receivers = {item.name_dest for item in matching}
+        distinct_receivers.add(event.name_dest)
         total_amount = sum(item.amount for item in matching) + event.amount
         return (
-            len(matching) + 1 >= self.config.rapid_outflow_count_threshold
-            or total_amount >= self.config.rapid_outflow_amount_threshold
+            len(distinct_receivers) >= self.config.fan_out_distinct_receiver_threshold
+            and total_amount >= self.config.fan_out_total_amount_threshold
         )
+
+    def _has_receiver_fan_in_burst(self, event: TransactionEvent, recent_receiver_events: list[TransactionEvent]) -> bool:
+        if event.txn_type not in INBOUND_TYPES:
+            return False
+        window_start = event.event_time.timestamp() - self.config.fan_in_window_seconds
+        matching = [
+            item
+            for item in recent_receiver_events
+            if item.name_dest == event.name_dest and item.event_time.timestamp() >= window_start
+        ]
+        distinct_senders = {item.name_orig for item in matching}
+        distinct_senders.add(event.name_orig)
+        total_amount = sum(item.amount for item in matching) + event.amount
+        return (
+            len(distinct_senders) >= self.config.fan_in_distinct_sender_threshold
+            and total_amount >= self.config.fan_in_total_amount_threshold
+        )
+
+    def _has_structured_split_transfer(self, event: TransactionEvent, recent_sender_events: list[TransactionEvent]) -> bool:
+        if event.txn_type != "TRANSFER":
+            return False
+        if not (self.config.structuring_min_amount <= event.amount <= self.config.structuring_max_amount):
+            return False
+        window_start = event.event_time.timestamp() - self.config.structuring_window_seconds
+        matching = [
+            item
+            for item in recent_sender_events
+            if (
+                item.name_orig == event.name_orig
+                and item.txn_type == "TRANSFER"
+                and self.config.structuring_min_amount <= item.amount <= self.config.structuring_max_amount
+                and item.event_time.timestamp() >= window_start
+            )
+        ]
+        total_amount = sum(item.amount for item in matching) + event.amount
+        return (
+            len(matching) + 1 >= self.config.structuring_count_threshold
+            and total_amount >= self.config.structuring_total_amount_threshold
+        )
+
+    def _is_new_counterparty_large_transfer(self, event: TransactionEvent, known_counterparties: set[str]) -> bool:
+        return (
+            event.txn_type == "TRANSFER"
+            and event.amount >= self.config.new_counterparty_amount_threshold
+            and event.name_dest not in known_counterparties
+        )
+
+    def _has_cashout_after_inbound_chain(self, event: TransactionEvent, recent_inbound_events: list[TransactionEvent]) -> bool:
+        if event.txn_type != "CASH_OUT":
+            return False
+        window_start = event.event_time.timestamp() - self.config.cashout_after_inbound_window_seconds
+        matching = [
+            item
+            for item in recent_inbound_events
+            if item.name_dest == event.name_orig and item.event_time.timestamp() >= window_start
+        ]
+        if not matching:
+            return False
+        inbound_total = sum(item.amount for item in matching)
+        if inbound_total <= 0:
+            return False
+        return (event.amount / inbound_total) >= self.config.cashout_after_inbound_ratio_threshold

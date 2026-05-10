@@ -27,7 +27,6 @@ def build_event_id(row: dict[str, str]) -> str:
             row["oldbalanceDest"].strip(),
             row["newbalanceDest"].strip(),
             row["isFraud"].strip(),
-            row["isFlaggedFraud"].strip(),
         ]
     )
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
@@ -43,7 +42,6 @@ def parse_csv_row(row: dict[str, str], config: PipelineConfig | None = None) -> 
         oldbalance_dest = float(row["oldbalanceDest"])
         newbalance_dest = float(row["newbalanceDest"])
         is_fraud = int(row["isFraud"])
-        is_flagged_fraud = int(row["isFlaggedFraud"])
     except (KeyError, TypeError, ValueError) as exc:
         raise ParseError(f"Invalid PaySim row: {exc}") from exc
 
@@ -63,7 +61,6 @@ def parse_csv_row(row: dict[str, str], config: PipelineConfig | None = None) -> 
         oldbalance_dest=oldbalance_dest,
         newbalance_dest=newbalance_dest,
         is_fraud=is_fraud,
-        is_flagged_fraud=is_flagged_fraud,
         schema_version=config.schema_version,
     )
 

@@ -78,6 +78,11 @@ def load_alerts():
         df = pd.DataFrame(list(rows))
         if not df.empty:
             df['alert_ts'] = pd.to_datetime(df['alert_ts'])
+            if 'triggered_rules' in df.columns:
+                df['triggered_rules'] = df['triggered_rules'].apply(
+                    lambda value: list(value) if isinstance(value, (list, tuple)) else ([] if pd.isna(value) else [str(value)])
+                )
+                df['primary_rule'] = df['triggered_rules'].apply(lambda rules: rules[0] if rules else 'ml_only')
         return df
     except Exception:
         return pd.DataFrame()
@@ -147,22 +152,75 @@ def main():
             fig_pie.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=0,r=0,t=20,b=0))
             st.plotly_chart(fig_pie, use_container_width=True)
 
+    c3, c4 = st.columns([2, 3])
+
+    with c3:
+        st.subheader("🧩 Alert Distribution By Rule")
+        if not filtered_df.empty and 'triggered_rules' in filtered_df.columns:
+            exploded_rules = filtered_df[['triggered_rules', 'amount']].explode('triggered_rules')
+            exploded_rules['triggered_rules'] = exploded_rules['triggered_rules'].fillna('ml_only')
+            rule_counts = (
+                exploded_rules.groupby('triggered_rules', as_index=False)
+                .agg(alert_count=('triggered_rules', 'size'), total_amount=('amount', 'sum'))
+                .sort_values(['alert_count', 'total_amount'], ascending=[False, False])
+            )
+            fig_rules = px.bar(
+                rule_counts.head(10),
+                x='triggered_rules',
+                y='alert_count',
+                color='total_amount',
+                template='plotly_dark',
+                color_continuous_scale='Bluered',
+                labels={'triggered_rules': 'Rule', 'alert_count': 'Alerts', 'total_amount': 'Amount'},
+            )
+            fig_rules.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=0,r=0,t=20,b=0))
+            st.plotly_chart(fig_rules, use_container_width=True)
+
+    with c4:
+        st.subheader("🎯 Primary Rule Mix")
+        if not filtered_df.empty and 'primary_rule' in filtered_df.columns:
+            primary_mix = (
+                filtered_df.groupby('primary_rule', as_index=False)
+                .agg(alert_count=('primary_rule', 'size'))
+                .sort_values('alert_count', ascending=False)
+            )
+            fig_primary = px.pie(
+                primary_mix,
+                names='primary_rule',
+                values='alert_count',
+                hole=0.45,
+                template='plotly_dark',
+            )
+            fig_primary.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=0,r=0,t=20,b=0))
+            st.plotly_chart(fig_primary, use_container_width=True)
+
     # --- DATA TABLE ---
     st.subheader("🚨 Live Alert Feed")
     if not filtered_df.empty:
         # Highlighting logic
         def highlight_fraud(row):
-            if row.severity == 'high':
+            if row['severity'] == 'high':
                 return ['background-color: rgba(255, 75, 75, 0.2)'] * len(row)
-            elif row.severity == 'medium':
+            elif row['severity'] == 'medium':
                 return ['background-color: rgba(255, 165, 0, 0.1)'] * len(row)
             return [''] * len(row)
 
         display_df = filtered_df.copy()
         display_df['status'] = display_df['severity'].apply(lambda x: "🔴 CRITICAL" if x == 'high' else ("🟠 WARNING" if x == 'medium' else "🔵 INFO"))
+        if 'triggered_rules' in display_df.columns:
+            display_df['triggered_rules_display'] = display_df['triggered_rules'].apply(lambda rules: ', '.join(rules) if rules else 'ml_only')
+        else:
+            display_df['triggered_rules_display'] = 'n/a'
         
+        styled_df = (
+            display_df[['status', 'severity', 'alert_ts', 'account_id', 'txn_type', 'amount', 'risk_score', 'ml_score', 'triggered_rules_display']]
+            .sort_values('alert_ts', ascending=False)
+            .style.apply(highlight_fraud, axis=1)
+            .hide(axis='columns', subset=['severity'])
+        )
+
         st.dataframe(
-            display_df[['status', 'alert_ts', 'account_id', 'txn_type', 'amount', 'risk_score', 'ml_score']].sort_values('alert_ts', ascending=False).style.apply(highlight_fraud, axis=1),
+            styled_df,
             use_container_width=True,
             hide_index=True,
             column_config={
@@ -170,7 +228,8 @@ def main():
                 "risk_score": st.column_config.ProgressColumn("Rule Score", min_value=0, max_value=1),
                 "ml_score": st.column_config.ProgressColumn("ML Score", min_value=0, max_value=1),
                 "amount": st.column_config.NumberColumn("Amount ($)", format="$ %d"),
-                "alert_ts": "Time"
+                "alert_ts": "Time",
+                "triggered_rules_display": "Triggered Rules",
             }
         )
 

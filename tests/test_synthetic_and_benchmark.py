@@ -17,7 +17,6 @@ def sample_event(step: int = 1, amount: str = "100.0") -> dict[str, str]:
         "oldbalanceDest": "0.0",
         "newbalanceDest": "100.0",
         "isFraud": "0",
-        "isFlaggedFraud": "0",
     }
 
 

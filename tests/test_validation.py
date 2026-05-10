@@ -14,7 +14,6 @@ def sample_transaction() -> dict[str, object]:
         "nameOrig": "C123",
         "nameDest": "C456",
         "isFraud": 0,
-        "isFlaggedFraud": 0,
         "schema_version": 1,
     }
 

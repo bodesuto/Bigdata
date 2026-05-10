@@ -14,6 +14,29 @@ class RuntimeRuleState:
     rapid_outflow_amount_threshold: float
     rapid_outflow_count_threshold: int
     watchlisted_accounts: frozenset[str]
+    account_drain_min_balance_floor: float
+    account_drain_ratio_threshold: float
+    account_drain_near_zero_balance: float
+    account_drain_weight: float
+    fan_out_window_seconds: int
+    fan_out_distinct_receiver_threshold: int
+    fan_out_total_amount_threshold: float
+    sender_fan_out_weight: float
+    fan_in_window_seconds: int
+    fan_in_distinct_sender_threshold: int
+    fan_in_total_amount_threshold: float
+    receiver_fan_in_weight: float
+    structuring_window_seconds: int
+    structuring_count_threshold: int
+    structuring_min_amount: float
+    structuring_max_amount: float
+    structuring_total_amount_threshold: float
+    structured_split_weight: float
+    new_counterparty_amount_threshold: float
+    new_counterparty_weight: float
+    cashout_after_inbound_window_seconds: int
+    cashout_after_inbound_ratio_threshold: float
+    cashout_after_inbound_weight: float
 
 
 def build_runtime_rule_state(
@@ -28,6 +51,29 @@ def build_runtime_rule_state(
     rapid_outflow_amount_threshold = config.rapid_outflow_amount_threshold
     rapid_outflow_count_threshold = config.rapid_outflow_count_threshold
     watchlisted_accounts: set[str] = set()
+    account_drain_min_balance_floor = config.account_drain_min_balance_floor
+    account_drain_ratio_threshold = config.account_drain_ratio_threshold
+    account_drain_near_zero_balance = config.account_drain_near_zero_balance
+    account_drain_weight = config.account_drain_weight
+    fan_out_window_seconds = config.fan_out_window_seconds
+    fan_out_distinct_receiver_threshold = config.fan_out_distinct_receiver_threshold
+    fan_out_total_amount_threshold = config.fan_out_total_amount_threshold
+    sender_fan_out_weight = config.sender_fan_out_weight
+    fan_in_window_seconds = config.fan_in_window_seconds
+    fan_in_distinct_sender_threshold = config.fan_in_distinct_sender_threshold
+    fan_in_total_amount_threshold = config.fan_in_total_amount_threshold
+    receiver_fan_in_weight = config.receiver_fan_in_weight
+    structuring_window_seconds = config.structuring_window_seconds
+    structuring_count_threshold = config.structuring_count_threshold
+    structuring_min_amount = config.structuring_min_amount
+    structuring_max_amount = config.structuring_max_amount
+    structuring_total_amount_threshold = config.structuring_total_amount_threshold
+    structured_split_weight = config.structured_split_weight
+    new_counterparty_amount_threshold = config.new_counterparty_amount_threshold
+    new_counterparty_weight = config.new_counterparty_weight
+    cashout_after_inbound_window_seconds = config.cashout_after_inbound_window_seconds
+    cashout_after_inbound_ratio_threshold = config.cashout_after_inbound_ratio_threshold
+    cashout_after_inbound_weight = config.cashout_after_inbound_weight
 
     for payload in payloads:
         if not isinstance(payload, Mapping):
@@ -54,12 +100,87 @@ def build_runtime_rule_state(
                 watchlisted_accounts.discard(account_id)
             else:
                 watchlisted_accounts.add(account_id)
+        elif rule_type == "account_drain_threshold":
+            if payload.get("min_balance_floor") is not None:
+                account_drain_min_balance_floor = float(payload["min_balance_floor"])
+            if payload.get("ratio_threshold") is not None:
+                account_drain_ratio_threshold = float(payload["ratio_threshold"])
+            if payload.get("near_zero_balance") is not None:
+                account_drain_near_zero_balance = float(payload["near_zero_balance"])
+            if payload.get("weight") is not None:
+                account_drain_weight = float(payload["weight"])
+        elif rule_type == "fan_out_threshold":
+            if payload.get("window_seconds") is not None:
+                fan_out_window_seconds = int(payload["window_seconds"])
+            if payload.get("distinct_receiver_threshold") is not None:
+                fan_out_distinct_receiver_threshold = int(payload["distinct_receiver_threshold"])
+            if payload.get("total_amount_threshold") is not None:
+                fan_out_total_amount_threshold = float(payload["total_amount_threshold"])
+            if payload.get("weight") is not None:
+                sender_fan_out_weight = float(payload["weight"])
+        elif rule_type == "fan_in_threshold":
+            if payload.get("window_seconds") is not None:
+                fan_in_window_seconds = int(payload["window_seconds"])
+            if payload.get("distinct_sender_threshold") is not None:
+                fan_in_distinct_sender_threshold = int(payload["distinct_sender_threshold"])
+            if payload.get("total_amount_threshold") is not None:
+                fan_in_total_amount_threshold = float(payload["total_amount_threshold"])
+            if payload.get("weight") is not None:
+                receiver_fan_in_weight = float(payload["weight"])
+        elif rule_type == "structuring_threshold":
+            if payload.get("window_seconds") is not None:
+                structuring_window_seconds = int(payload["window_seconds"])
+            if payload.get("count_threshold") is not None:
+                structuring_count_threshold = int(payload["count_threshold"])
+            if payload.get("min_amount") is not None:
+                structuring_min_amount = float(payload["min_amount"])
+            if payload.get("max_amount") is not None:
+                structuring_max_amount = float(payload["max_amount"])
+            if payload.get("total_amount_threshold") is not None:
+                structuring_total_amount_threshold = float(payload["total_amount_threshold"])
+            if payload.get("weight") is not None:
+                structured_split_weight = float(payload["weight"])
+        elif rule_type == "new_counterparty_threshold":
+            if payload.get("amount_threshold") is not None:
+                new_counterparty_amount_threshold = float(payload["amount_threshold"])
+            if payload.get("weight") is not None:
+                new_counterparty_weight = float(payload["weight"])
+        elif rule_type == "cashout_after_inbound_threshold":
+            if payload.get("window_seconds") is not None:
+                cashout_after_inbound_window_seconds = int(payload["window_seconds"])
+            if payload.get("ratio_threshold") is not None:
+                cashout_after_inbound_ratio_threshold = float(payload["ratio_threshold"])
+            if payload.get("weight") is not None:
+                cashout_after_inbound_weight = float(payload["weight"])
 
     return RuntimeRuleState(
         amount_thresholds=amount_thresholds,
         rapid_outflow_amount_threshold=rapid_outflow_amount_threshold,
         rapid_outflow_count_threshold=rapid_outflow_count_threshold,
         watchlisted_accounts=frozenset(watchlisted_accounts),
+        account_drain_min_balance_floor=account_drain_min_balance_floor,
+        account_drain_ratio_threshold=account_drain_ratio_threshold,
+        account_drain_near_zero_balance=account_drain_near_zero_balance,
+        account_drain_weight=account_drain_weight,
+        fan_out_window_seconds=fan_out_window_seconds,
+        fan_out_distinct_receiver_threshold=fan_out_distinct_receiver_threshold,
+        fan_out_total_amount_threshold=fan_out_total_amount_threshold,
+        sender_fan_out_weight=sender_fan_out_weight,
+        fan_in_window_seconds=fan_in_window_seconds,
+        fan_in_distinct_sender_threshold=fan_in_distinct_sender_threshold,
+        fan_in_total_amount_threshold=fan_in_total_amount_threshold,
+        receiver_fan_in_weight=receiver_fan_in_weight,
+        structuring_window_seconds=structuring_window_seconds,
+        structuring_count_threshold=structuring_count_threshold,
+        structuring_min_amount=structuring_min_amount,
+        structuring_max_amount=structuring_max_amount,
+        structuring_total_amount_threshold=structuring_total_amount_threshold,
+        structured_split_weight=structured_split_weight,
+        new_counterparty_amount_threshold=new_counterparty_amount_threshold,
+        new_counterparty_weight=new_counterparty_weight,
+        cashout_after_inbound_window_seconds=cashout_after_inbound_window_seconds,
+        cashout_after_inbound_ratio_threshold=cashout_after_inbound_ratio_threshold,
+        cashout_after_inbound_weight=cashout_after_inbound_weight,
     )
 
 

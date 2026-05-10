@@ -18,7 +18,6 @@ def sample_transaction(**overrides):
         "nameOrig": "C123",
         "nameDest": "C456",
         "isFraud": 1,
-        "isFlaggedFraud": 0,
         "schema_version": 1,
     }
     payload.update(overrides)

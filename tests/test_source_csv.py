@@ -11,11 +11,11 @@ from fraud_pipeline import (
 
 
 def sample_rows() -> str:
-    return "\n".join(
+        return "\n".join(
         [
-            "step,type,amount,nameOrig,oldbalanceOrg,newbalanceOrig,nameDest,oldbalanceDest,newbalanceDest,isFraud,isFlaggedFraud",
-            "1,TRANSFER,100.0,C1,1000.0,900.0,C2,10.0,110.0,0,0",
-            "2,CASH_OUT,250000.0,C3,260000.0,10000.0,C4,0.0,0.0,1,0",
+            "step,type,amount,nameOrig,oldbalanceOrg,newbalanceOrig,nameDest,oldbalanceDest,newbalanceDest,isFraud",
+            "1,TRANSFER,100.0,C1,1000.0,900.0,C2,10.0,110.0,0",
+            "2,CASH_OUT,250000.0,C3,260000.0,10000.0,C4,0.0,0.0,1",
         ]
     )
 

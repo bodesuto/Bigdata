@@ -24,7 +24,6 @@ TRANSACTION_SOURCE_FIELDS = [
     "nameOrig",
     "nameDest",
     "isFraud",
-    "isFlaggedFraud",
     "schema_version",
 ]
 
@@ -122,7 +121,6 @@ def load_transaction_source_row(row: dict[str, str]) -> dict[str, Any]:
         "nameOrig": row["nameOrig"],
         "nameDest": row["nameDest"],
         "isFraud": int(row["isFraud"]),
-        "isFlaggedFraud": int(row["isFlaggedFraud"]),
         "schema_version": int(row.get("schema_version", "1")),
     }
 

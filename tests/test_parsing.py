@@ -15,7 +15,6 @@ def sample_row(**overrides: str) -> dict[str, str]:
         "oldbalanceDest": "0.0",
         "newbalanceDest": "0.0",
         "isFraud": "1",
-        "isFlaggedFraud": "0",
     }
     row.update(overrides)
     return row

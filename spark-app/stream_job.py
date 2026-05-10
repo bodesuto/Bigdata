@@ -86,7 +86,6 @@ def transaction_schema() -> StructType:
             StructField("nameOrig", StringType(), False),
             StructField("nameDest", StringType(), False),
             StructField("isFraud", IntegerType(), False),
-            StructField("isFlaggedFraud", IntegerType(), False),
             StructField("schema_version", IntegerType(), False),
         ]
     )
@@ -258,7 +257,6 @@ def build_integrated_stream(
             F.col("nameOrig").alias("tx_name_orig"),
             F.col("nameDest").alias("tx_name_dest"),
             F.col("isFraud").alias("tx_is_fraud"),
-            F.col("isFlaggedFraud").alias("tx_is_flagged_fraud"),
             F.col("schema_version").alias("tx_schema_version"),
         )
     )
@@ -385,7 +383,6 @@ def build_integrated_stream(
             "oldbalanceDest",
             "newbalanceDest",
             F.col("tx_is_fraud").alias("isFraud"),
-            F.col("tx_is_flagged_fraud").alias("isFlaggedFraud"),
             F.col("tx_schema_version").alias("schema_version"),
         )
     )
@@ -651,6 +648,29 @@ def config_from_rule_state(state: RuntimeRuleState) -> PipelineConfig:
         high_amount_cash_out_threshold=state.amount_thresholds.get("CASH_OUT", BASE_CONFIG.high_amount_cash_out_threshold),
         rapid_outflow_amount_threshold=state.rapid_outflow_amount_threshold,
         rapid_outflow_count_threshold=state.rapid_outflow_count_threshold,
+        account_drain_min_balance_floor=state.account_drain_min_balance_floor,
+        account_drain_ratio_threshold=state.account_drain_ratio_threshold,
+        account_drain_near_zero_balance=state.account_drain_near_zero_balance,
+        account_drain_weight=state.account_drain_weight,
+        fan_out_window_seconds=state.fan_out_window_seconds,
+        fan_out_distinct_receiver_threshold=state.fan_out_distinct_receiver_threshold,
+        fan_out_total_amount_threshold=state.fan_out_total_amount_threshold,
+        sender_fan_out_weight=state.sender_fan_out_weight,
+        fan_in_window_seconds=state.fan_in_window_seconds,
+        fan_in_distinct_sender_threshold=state.fan_in_distinct_sender_threshold,
+        fan_in_total_amount_threshold=state.fan_in_total_amount_threshold,
+        receiver_fan_in_weight=state.receiver_fan_in_weight,
+        structuring_window_seconds=state.structuring_window_seconds,
+        structuring_count_threshold=state.structuring_count_threshold,
+        structuring_min_amount=state.structuring_min_amount,
+        structuring_max_amount=state.structuring_max_amount,
+        structuring_total_amount_threshold=state.structuring_total_amount_threshold,
+        structured_split_weight=state.structured_split_weight,
+        new_counterparty_amount_threshold=state.new_counterparty_amount_threshold,
+        new_counterparty_weight=state.new_counterparty_weight,
+        cashout_after_inbound_window_seconds=state.cashout_after_inbound_window_seconds,
+        cashout_after_inbound_ratio_threshold=state.cashout_after_inbound_ratio_threshold,
+        cashout_after_inbound_weight=state.cashout_after_inbound_weight,
     )
 
 
@@ -669,8 +689,34 @@ def build_history_stub(event: TransactionEvent, event_time: datetime, amount: fl
         oldbalance_dest=event.oldbalance_dest,
         newbalance_dest=event.newbalance_dest,
         is_fraud=0,
-        is_flagged_fraud=0,
         schema_version=event.schema_version,
+    )
+
+
+def build_transaction_stub(
+    template: TransactionEvent,
+    event_id: str,
+    event_time: datetime,
+    txn_type: str,
+    amount: float,
+    name_orig: str,
+    name_dest: str,
+) -> TransactionEvent:
+    return TransactionEvent(
+        event_id=event_id,
+        event_time=event_time,
+        producer_ts=event_time,
+        step=template.step,
+        txn_type=txn_type,
+        amount=amount,
+        name_orig=name_orig,
+        oldbalance_org=template.oldbalance_org,
+        newbalance_orig=template.newbalance_orig,
+        name_dest=name_dest,
+        oldbalance_dest=template.oldbalance_dest,
+        newbalance_dest=template.newbalance_dest,
+        is_fraud=0,
+        schema_version=template.schema_version,
     )
 
 
@@ -693,10 +739,98 @@ def load_recent_sender_events(
         try:
             payload = json.loads(raw_member)
             event_time = datetime.fromisoformat(payload["event_time"])
-            history.append(build_history_stub(event, event_time, float(payload["amount"])))
+            history.append(
+                build_transaction_stub(
+                    event,
+                    payload.get("event_id", f"history:{event.name_orig}:{int(event_time.timestamp())}"),
+                    event_time,
+                    str(payload.get("txn_type", event.txn_type)),
+                    float(payload["amount"]),
+                    event.name_orig,
+                    str(payload.get("counterparty", event.name_dest)),
+                )
+            )
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             continue
     return history
+
+
+def load_recent_receiver_events(
+    redis_client: redis.Redis,
+    event: TransactionEvent,
+    config: PipelineConfig,
+) -> list[TransactionEvent]:
+    history_key = f"receiver_history:{event.name_dest}"
+    current_ts = int(event.event_time.timestamp())
+    lower_bound = current_ts - config.fan_in_window_seconds
+    try:
+        redis_client.zremrangebyscore(history_key, 0, lower_bound - 1)
+        members = redis_client.zrangebyscore(history_key, lower_bound, current_ts)
+    except redis.RedisError:
+        return []
+
+    history: list[TransactionEvent] = []
+    for raw_member in members:
+        try:
+            payload = json.loads(raw_member)
+            event_time = datetime.fromisoformat(payload["event_time"])
+            history.append(
+                build_transaction_stub(
+                    event,
+                    payload.get("event_id", f"history:{event.name_dest}:{int(event_time.timestamp())}"),
+                    event_time,
+                    str(payload.get("txn_type", event.txn_type)),
+                    float(payload["amount"]),
+                    str(payload.get("counterparty", event.name_orig)),
+                    event.name_dest,
+                )
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+    return history
+
+
+def load_recent_inbound_events(
+    redis_client: redis.Redis,
+    event: TransactionEvent,
+    config: PipelineConfig,
+) -> list[TransactionEvent]:
+    history_key = f"inbound_history:{event.name_orig}"
+    current_ts = int(event.event_time.timestamp())
+    lower_bound = current_ts - config.cashout_after_inbound_window_seconds
+    try:
+        redis_client.zremrangebyscore(history_key, 0, lower_bound - 1)
+        members = redis_client.zrangebyscore(history_key, lower_bound, current_ts)
+    except redis.RedisError:
+        return []
+
+    history: list[TransactionEvent] = []
+    for raw_member in members:
+        try:
+            payload = json.loads(raw_member)
+            event_time = datetime.fromisoformat(payload["event_time"])
+            history.append(
+                build_transaction_stub(
+                    event,
+                    payload.get("event_id", f"history:inbound:{event.name_orig}:{int(event_time.timestamp())}"),
+                    event_time,
+                    str(payload.get("txn_type", "TRANSFER")),
+                    float(payload["amount"]),
+                    str(payload.get("counterparty", event.name_dest)),
+                    event.name_orig,
+                )
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+    return history
+
+
+def load_known_counterparties(redis_client: redis.Redis, account_id: str) -> set[str]:
+    try:
+        members = redis_client.smembers(f"counterparties:{account_id}")
+    except redis.RedisError:
+        return set()
+    return {member.decode("utf-8") if isinstance(member, bytes) else str(member) for member in members}
 
 
 def append_sender_history(redis_client: redis.Redis, event: TransactionEvent, config: PipelineConfig) -> None:
@@ -705,13 +839,63 @@ def append_sender_history(redis_client: redis.Redis, event: TransactionEvent, co
         {
             "event_id": event.event_id,
             "event_time": event.event_time.isoformat(),
+            "txn_type": event.txn_type,
             "amount": event.amount,
+            "counterparty": event.name_dest,
         },
         ensure_ascii=False,
     )
     try:
         redis_client.zadd(history_key, {payload: int(event.event_time.timestamp())})
         redis_client.expire(history_key, max(config.rapid_outflow_window_seconds * 6, 3600))
+    except redis.RedisError:
+        return
+
+
+def append_receiver_history(redis_client: redis.Redis, event: TransactionEvent, config: PipelineConfig) -> None:
+    history_key = f"receiver_history:{event.name_dest}"
+    payload = json.dumps(
+        {
+            "event_id": event.event_id,
+            "event_time": event.event_time.isoformat(),
+            "txn_type": event.txn_type,
+            "amount": event.amount,
+            "counterparty": event.name_orig,
+        },
+        ensure_ascii=False,
+    )
+    try:
+        redis_client.zadd(history_key, {payload: int(event.event_time.timestamp())})
+        redis_client.expire(history_key, max(config.fan_in_window_seconds * 6, 3600))
+    except redis.RedisError:
+        return
+
+
+def append_inbound_history(redis_client: redis.Redis, event: TransactionEvent, config: PipelineConfig) -> None:
+    if event.txn_type not in {"TRANSFER", "CASH_IN"}:
+        return
+    history_key = f"inbound_history:{event.name_dest}"
+    payload = json.dumps(
+        {
+            "event_id": event.event_id,
+            "event_time": event.event_time.isoformat(),
+            "txn_type": event.txn_type,
+            "amount": event.amount,
+            "counterparty": event.name_orig,
+        },
+        ensure_ascii=False,
+    )
+    try:
+        redis_client.zadd(history_key, {payload: int(event.event_time.timestamp())})
+        redis_client.expire(history_key, max(config.cashout_after_inbound_window_seconds * 6, 3600))
+    except redis.RedisError:
+        return
+
+
+def append_counterparty_history(redis_client: redis.Redis, event: TransactionEvent) -> None:
+    try:
+        redis_client.sadd(f"counterparties:{event.name_orig}", event.name_dest)
+        redis_client.expire(f"counterparties:{event.name_orig}", 86400 * 30)
     except redis.RedisError:
         return
 
@@ -839,6 +1023,9 @@ def process_integrated_batch(batch_df: DataFrame, batch_id: int, query_name: str
     producer = get_kafka_producer()
     watchlisted_accounts = set(rule_state.watchlisted_accounts)
     in_batch_sender_history: dict[str, list[TransactionEvent]] = {}
+    in_batch_receiver_history: dict[str, list[TransactionEvent]] = {}
+    in_batch_inbound_history: dict[str, list[TransactionEvent]] = {}
+    in_batch_counterparties: dict[str, set[str]] = {}
     processed_count = 0
     alert_count = 0
 
@@ -848,9 +1035,18 @@ def process_integrated_batch(batch_df: DataFrame, batch_id: int, query_name: str
         event = integrated_payload_to_transaction_event(payload)
         recent = load_recent_sender_events(get_redis_client(), event, config)
         recent.extend(in_batch_sender_history.get(event.name_orig, []))
+        receiver_recent = load_recent_receiver_events(get_redis_client(), event, config)
+        receiver_recent.extend(in_batch_receiver_history.get(event.name_dest, []))
+        inbound_recent = load_recent_inbound_events(get_redis_client(), event, config)
+        inbound_recent.extend(in_batch_inbound_history.get(event.name_orig, []))
+        known_counterparties = load_known_counterparties(get_redis_client(), event.name_orig)
+        known_counterparties.update(in_batch_counterparties.get(event.name_orig, set()))
         decision = engine.evaluate(
             event,
             recent_sender_events=recent,
+            recent_receiver_events=receiver_recent,
+            recent_inbound_events=inbound_recent,
+            known_counterparties=known_counterparties,
             watchlisted_accounts=watchlisted_accounts,
         )
         persist_transaction(event, decision.risk_score)
@@ -862,7 +1058,14 @@ def process_integrated_batch(batch_df: DataFrame, batch_id: int, query_name: str
             cache_alert_payload(event.event_id, alert_payload)
             alert_count += 1
         append_sender_history(get_redis_client(), event, config)
+        append_receiver_history(get_redis_client(), event, config)
+        append_inbound_history(get_redis_client(), event, config)
+        append_counterparty_history(get_redis_client(), event)
         in_batch_sender_history.setdefault(event.name_orig, []).append(event)
+        in_batch_receiver_history.setdefault(event.name_dest, []).append(event)
+        if event.txn_type in {"TRANSFER", "CASH_IN"}:
+            in_batch_inbound_history.setdefault(event.name_dest, []).append(event)
+        in_batch_counterparties.setdefault(event.name_orig, set()).add(event.name_dest)
         processed_count += 1
 
     producer.flush()
@@ -942,7 +1145,6 @@ def main() -> None:
             "nameOrig",
             "nameDest",
             "isFraud",
-            "isFlaggedFraud",
         ],
         timestamp_fields=["event_time", "producer_ts"],
     )

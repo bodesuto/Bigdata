@@ -25,7 +25,6 @@ def create_payload(event_id, step, tx_type, amount, name_orig, name_dest):
         "nameOrig": name_orig,
         "nameDest": name_dest,
         "isFraud": 0,
-        "isFlaggedFraud": 0,
         "schema_version": 1
     }
     

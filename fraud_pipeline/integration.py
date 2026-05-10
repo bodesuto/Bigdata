@@ -76,7 +76,6 @@ def integrate_logical_streams(
         "oldbalanceDest": float(_value(receiver_payload, "oldbalanceDest")),
         "newbalanceDest": float(_value(receiver_payload, "newbalanceDest")),
         "isFraud": int(_value(transaction_payload, "isFraud")),
-        "isFlaggedFraud": int(_value(transaction_payload, "isFlaggedFraud")),
         "schema_version": int(transaction_payload.get("schema_version", 1)),
     }
 
@@ -96,6 +95,5 @@ def integrated_payload_to_transaction_event(payload: Mapping[str, Any]) -> Trans
         oldbalance_dest=float(_value(payload, "oldbalanceDest")),
         newbalance_dest=float(_value(payload, "newbalanceDest")),
         is_fraud=int(_value(payload, "isFraud")),
-        is_flagged_fraud=int(_value(payload, "isFlaggedFraud")),
         schema_version=int(payload.get("schema_version", 1)),
     )

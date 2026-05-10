@@ -11,6 +11,7 @@ COPY spark-app /opt/project/spark-app-build
 
 ENV PYTHONPATH=/opt/project:/opt/spark/app
 
-RUN chmod +x /opt/project/spark-app-build/entrypoint.sh
+RUN sed -i 's/\r$//' /opt/project/spark-app-build/entrypoint.sh \
+    && chmod +x /opt/project/spark-app-build/entrypoint.sh
 
 CMD ["/opt/project/spark-app-build/entrypoint.sh"]
