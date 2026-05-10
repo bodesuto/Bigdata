@@ -7,21 +7,7 @@ scrape_configs:
     static_configs:
       - targets: ['localhost:9090']
 
-  - job_name: 'spark-master'
-    metrics_path: /metrics/master/prometheus
-    static_configs:
-      - targets: ['spark-master:8080']
-
-  - job_name: 'spark-worker'
-    metrics_path: /metrics/worker/prometheus
-    static_configs:
-      - targets: ['spark-worker:8081']
-
   - job_name: 'spark-app'
-    metrics_path: /metrics/prometheus
+    metrics_path: /metrics/executors/prometheus
     static_configs:
       - targets: ['spark-fraud-detection:4040']
-
-  - job_name: 'kafka'
-    static_configs:
-      - targets: ['kafka:29092']
