@@ -1,0 +1,14 @@
+{
+  "total_transactions": 10000,
+  "fraud_count": 68,
+  "legitimate_count": 9932,
+  "fraud_rate_percent": 0.68,
+  "imbalance_ratio": "1:146",
+  "transaction_types": {
+    "PAYMENT": 5465,
+    "CASH_IN": 1949,
+    "CASH_OUT": 1321,
+    "TRANSFER": 921,
+    "DEBIT": 344
+  }
+}

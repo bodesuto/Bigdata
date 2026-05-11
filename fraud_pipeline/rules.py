@@ -6,6 +6,12 @@ from math import prod
 from .config import PipelineConfig
 from .models import FraudDecision, TransactionEvent
 
+try:
+    from model.model_utils import predict_proba, model_is_loaded, get_model_version, get_threshold
+    _ML_AVAILABLE = True
+except ImportError:
+    _ML_AVAILABLE = False
+
 
 OUTBOUND_TYPES = {"TRANSFER", "CASH_OUT"}
 INBOUND_TYPES = {"TRANSFER", "CASH_IN"}
@@ -58,9 +64,11 @@ class RuleEngine:
         rule_risk_score = 1 - prod(1 - weight for weight in weights) if weights else 0.0
 
         ml_score = self._predict_ml_score(event)
+        ml_version = get_model_version() if _ML_AVAILABLE else "v0"
+        threshold = get_threshold() if _ML_AVAILABLE else 0.85
 
         combined_risk_score = min((rule_risk_score * 0.6) + (ml_score * 0.4), 1.0)
-        is_alert = bool(triggered_rules) or ml_score >= 0.85
+        is_alert = bool(triggered_rules) or ml_score >= threshold
         severity = "high" if combined_risk_score >= 0.65 else "medium" if combined_risk_score >= 0.35 else "low"
 
         return FraudDecision(
@@ -69,17 +77,17 @@ class RuleEngine:
             risk_score=round(combined_risk_score, 4),
             severity=severity,
             ml_score=ml_score,
-            ml_model_version="v1_paysim_rf",
+            ml_model_version=ml_version,
             triggered_rules=tuple(triggered_rules),
         )
 
-    # Cần sửa lại phần này ngay sau khi có models để đảm bảo tính nhất quán của pipeline, hiện tại chỉ là placeholderq
     def _predict_ml_score(self, event: TransactionEvent) -> float:
-        if event.txn_type == "TRANSFER" and event.amount > 500000:
-            return 0.88
-        if event.txn_type == "CASH_OUT" and event.newbalance_orig == 0:
-            return 0.75
-        return 0.12
+        if not _ML_AVAILABLE:
+            return 0.0
+        try:
+            return predict_proba(event)
+        except Exception:
+            return 0.0
 
     def _is_account_drain_near_zero(self, event: TransactionEvent) -> bool:
         if event.txn_type not in OUTBOUND_TYPES:

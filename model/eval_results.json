@@ -1,0 +1,28 @@
+{
+  "metrics": {
+    "auc_roc": 1.0,
+    "auc_pr": 1.0,
+    "optimal_threshold": 0.6182,
+    "f1_score": 1.0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "train_time_seconds": 0.17,
+    "confusion_matrix": {
+      "tn": 1998,
+      "fp": 0,
+      "fn": 0,
+      "tp": 2
+    }
+  },
+  "optimal_threshold": 0.6182002806109451,
+  "model_version": "v1_paysim_rf",
+  "plots": [
+    "amount_dist.png",
+    "confusion_matrix.png",
+    "correlation_matrix.png",
+    "feature_importance.png",
+    "fraud_by_type.png",
+    "pr_curve.png",
+    "roc_curve.png"
+  ]
+}
