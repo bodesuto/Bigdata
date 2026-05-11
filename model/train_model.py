@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import sys
 import time
@@ -18,14 +19,15 @@ from sklearn.metrics import (
     roc_auc_score,
     roc_curve,
 )
-from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from fraud_pipeline import PipelineConfig, iter_transaction_events
+from fraud_pipeline import PipelineConfig, iter_transaction_events, transaction_to_dict
 from fraud_pipeline.features import FEATURE_COLUMNS, TXN_TYPE_CATEGORIES, build_feature_record
+from fraud_pipeline.parsing import parse_csv_row
 
 MODEL_DIR = Path(__file__).resolve().parent
 PLOTS_DIR = MODEL_DIR / "plots"
@@ -103,7 +105,6 @@ def run_eda(X: np.ndarray, y: np.ndarray, txn_types: list[str], feature_cols: li
         import matplotlib.pyplot as plt
         import seaborn as sns
 
-        # 1. Fraud by transaction type
         plt.figure(figsize=(10, 5))
         type_list = list(type_counts.keys())
         fraud_counts = []
@@ -123,7 +124,6 @@ def run_eda(X: np.ndarray, y: np.ndarray, txn_types: list[str], feature_cols: li
         plt.close()
         print("[PLOT] Saved fraud_by_type.png")
 
-        # 2. Amount distribution
         fig, axes = plt.subplots(1, 2, figsize=(14, 5))
         axes[0].hist(amount_vals[legit_indices], bins=50, alpha=0.7, color="#51cf66", label="Legitimate")
         axes[0].set_title("Amount Distribution - Legitimate")
@@ -140,7 +140,6 @@ def run_eda(X: np.ndarray, y: np.ndarray, txn_types: list[str], feature_cols: li
         plt.close()
         print("[PLOT] Saved amount_dist.png")
 
-        # 3. Correlation matrix
         corr_cols = [c for c in feature_cols if not c.startswith("type_")]
         corr_indices = [feature_cols.index(c) for c in corr_cols]
         corr_X = X[:, corr_indices]
@@ -174,22 +173,33 @@ def run_eda(X: np.ndarray, y: np.ndarray, txn_types: list[str], feature_cols: li
     print(f"[INFO] EDA summary saved to {eda_path}")
 
 
-def train_model(X_train, y_train, X_test, y_test, feature_cols):
+def tune_threshold(y_val: np.ndarray, y_prob_val: np.ndarray) -> tuple[float, float, float, float, float]:
+    precisions, recalls, thresholds = precision_recall_curve(y_val, y_prob_val)
+    f1_scores = 2 * (precisions[:-1] * recalls[:-1]) / (precisions[:-1] + recalls[:-1] + 1e-8)
+    best_idx = int(np.argmax(f1_scores))
+    return thresholds[best_idx], f1_scores[best_idx], precisions[best_idx], recalls[best_idx], auc(recalls, precisions)
+
+
+def train_model(X_train, y_train, X_val, y_val, X_test, y_test, feature_cols):
     print("\n" + "=" * 60)
     print("TRAINING")
     print("=" * 60)
 
     n_fraud_train = int(y_train.sum())
-    print(f"Train: {len(y_train)} samples ({n_fraud_train} fraud, {n_fraud_train/len(y_train)*100:.3f}%)")
-    print(f"Test:  {len(y_test)} samples ({int(y_test.sum())} fraud, {int(y_test.sum())/len(y_test)*100:.3f}%)")
+    n_fraud_val = int(y_val.sum())
+    n_fraud_test = int(y_test.sum())
+    print(f"Train: {len(y_train):,} samples ({n_fraud_train:,} fraud, {n_fraud_train/len(y_train)*100:.3f}%)")
+    print(f"Val:   {len(y_val):,} samples ({n_fraud_val:,} fraud, {n_fraud_val/len(y_val)*100:.3f}%)")
+    print(f"Test:  {len(y_test):,} samples ({n_fraud_test:,} fraud, {n_fraud_test/len(y_test)*100:.3f}%)")
 
-    print("\n[STEP] Applying SMOTE to handle class imbalance...")
+    print(f"\n[STEP] Applying SMOTE on training set...")
     smote = SMOTE(random_state=42)
     X_train_res, y_train_res = smote.fit_resample(X_train, y_train)
     n_resampled = int(y_train_res.sum())
-    print(f"  After SMOTE: {len(y_train_res)} samples ({n_resampled} fraud, {n_resampled/len(y_train_res)*100:.1f}%)")
+    print(f"  Train before SMOTE: {len(X_train):,} ({n_fraud_train:,} fraud)")
+    print(f"  Train after SMOTE:  {len(X_train_res):,} ({n_resampled:,} fraud)")
 
-    print("\n[STEP] Training Random Forest...")
+    print(f"\n[STEP] Training Random Forest...")
     rf = RandomForestClassifier(
         n_estimators=100,
         max_depth=15,
@@ -204,34 +214,30 @@ def train_model(X_train, y_train, X_test, y_test, feature_cols):
     elapsed = time.time() - start
     print(f"  Training completed in {elapsed:.2f}s")
 
-    print("\n[STEP] Evaluating on test set...")
-    y_prob = rf.predict_proba(X_test)[:, 1]
-    y_pred = rf.predict(X_test)
+    print(f"\n[STEP] Tuning threshold on validation set ({len(y_val):,} samples)...")
+    y_prob_val = rf.predict_proba(X_val)[:, 1]
+    best_threshold, val_f1, val_precision, val_recall, val_auc_pr = tune_threshold(y_val, y_prob_val)
+    print(f"  Validation AUC-PR: {val_auc_pr:.4f}")
+    print(f"  Optimal threshold:  {best_threshold:.4f}")
+    print(f"  Val F1:             {val_f1:.4f}")
+    print(f"  Val Precision:      {val_precision:.4f}")
+    print(f"  Val Recall:         {val_recall:.4f}")
 
-    auc_roc = roc_auc_score(y_test, y_prob)
-    print(f"\n  AUC-ROC: {auc_roc:.4f}")
+    print(f"\n[STEP] Final evaluation on held-out test set ({len(y_test):,} samples)...")
+    y_prob_test = rf.predict_proba(X_test)[:, 1]
+    auc_roc = roc_auc_score(y_test, y_prob_test)
+    auc_pr = auc(*(precision_recall_curve(y_test, y_prob_test)[:2][::-1]))
 
-    precisions, recalls, thresholds = precision_recall_curve(y_test, y_prob)
-    auc_pr = auc(recalls, precisions)
-    print(f"  AUC-PR:  {auc_pr:.4f}")
-
-    f1_scores = 2 * (precisions[:-1] * recalls[:-1]) / (precisions[:-1] + recalls[:-1] + 1e-8)
-    best_idx = int(np.argmax(f1_scores))
-    best_threshold = thresholds[best_idx]
-    best_f1 = f1_scores[best_idx]
-    best_precision = precisions[best_idx]
-    best_recall = recalls[best_idx]
-    print(f"\n  Optimal threshold: {best_threshold:.4f}")
-    print(f"  F1 score:          {best_f1:.4f}")
-    print(f"  Precision:         {best_precision:.4f}")
-    print(f"  Recall:            {best_recall:.4f}")
-
-    y_pred_opt = (y_prob >= best_threshold).astype(int)
-    print(f"\n  Confusion Matrix (threshold={best_threshold:.4f}):")
+    y_pred_opt = (y_prob_test >= best_threshold).astype(int)
     cm = confusion_matrix(y_test, y_pred_opt)
+    test_f1 = 2 * cm[1, 1] / (2 * cm[1, 1] + cm[0, 1] + cm[1, 0] + 1e-8)
+
+    print(f"\n  Test AUC-ROC: {auc_roc:.4f}")
+    print(f"  Test AUC-PR:  {auc_pr:.4f}")
+    print(f"  Test F1:      {test_f1:.4f}")
+    print(f"\n  Confusion Matrix (threshold={best_threshold:.4f}):")
     print(f"    TN={cm[0, 0]:,}  FP={cm[0, 1]:,}")
     print(f"    FN={cm[1, 0]:,}  TP={cm[1, 1]:,}")
-
     print(f"\n  Classification Report:")
     print(classification_report(y_test, y_pred_opt, target_names=["Legit", "Fraud"], digits=4))
 
@@ -240,14 +246,15 @@ def train_model(X_train, y_train, X_test, y_test, feature_cols):
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
-        # PR Curve
         plt.figure(figsize=(8, 6))
+        precisions, recalls, _ = precision_recall_curve(y_test, y_prob_test)
         plt.plot(recalls, precisions, color="#4dabf7", linewidth=2, label=f"PR curve (AUC={auc_pr:.3f})")
-        plt.scatter([best_recall], [best_precision], color="#ff6b6b", s=100, zorder=5,
-                    label=f"Optimal threshold={best_threshold:.3f}")
+        plt.scatter([recalls[np.argmax(2*precisions[:-1]*recalls[:-1]/(precisions[:-1]+recalls[:-1]+1e-8))]],
+                    [precisions[np.argmax(2*precisions[:-1]*recalls[:-1]/(precisions[:-1]+recalls[:-1]+1e-8))]],
+                    color="#ff6b6b", s=100, zorder=5, label=f"Optimal threshold={best_threshold:.3f}")
         plt.xlabel("Recall", fontsize=12)
         plt.ylabel("Precision", fontsize=12)
-        plt.title("Precision-Recall Curve", fontsize=14, fontweight="bold")
+        plt.title("Precision-Recall Curve (Test Set)", fontsize=14, fontweight="bold")
         plt.legend()
         plt.grid(alpha=0.3)
         plt.tight_layout()
@@ -255,14 +262,13 @@ def train_model(X_train, y_train, X_test, y_test, feature_cols):
         plt.close()
         print("[PLOT] Saved pr_curve.png")
 
-        # ROC Curve
-        fpr, tpr, _ = roc_curve(y_test, y_prob)
+        fpr, tpr, _ = roc_curve(y_test, y_prob_test)
         plt.figure(figsize=(8, 6))
         plt.plot(fpr, tpr, color="#4dabf7", linewidth=2, label=f"ROC curve (AUC={auc_roc:.3f})")
         plt.plot([0, 1], [0, 1], "k--", alpha=0.5)
         plt.xlabel("False Positive Rate", fontsize=12)
         plt.ylabel("True Positive Rate", fontsize=12)
-        plt.title("ROC Curve", fontsize=14, fontweight="bold")
+        plt.title("ROC Curve (Test Set)", fontsize=14, fontweight="bold")
         plt.legend()
         plt.grid(alpha=0.3)
         plt.tight_layout()
@@ -270,7 +276,6 @@ def train_model(X_train, y_train, X_test, y_test, feature_cols):
         plt.close()
         print("[PLOT] Saved roc_curve.png")
 
-        # Confusion Matrix
         import seaborn as sns
         plt.figure(figsize=(6, 5))
         sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=["Legit", "Fraud"],
@@ -283,7 +288,6 @@ def train_model(X_train, y_train, X_test, y_test, feature_cols):
         plt.close()
         print("[PLOT] Saved confusion_matrix.png")
 
-        # Feature Importance
         importances = rf.feature_importances_
         indices = np.argsort(importances)[::-1]
         plt.figure(figsize=(12, 8))
@@ -300,19 +304,27 @@ def train_model(X_train, y_train, X_test, y_test, feature_cols):
     except ImportError:
         print("[WARN] matplotlib not available, skipping evaluation plots")
 
-    return rf, best_threshold, {
+    metrics = {
         "auc_roc": round(float(auc_roc), 4),
         "auc_pr": round(float(auc_pr), 4),
         "optimal_threshold": round(float(best_threshold), 4),
-        "f1_score": round(float(best_f1), 4),
-        "precision": round(float(best_precision), 4),
-        "recall": round(float(best_recall), 4),
+        "f1_score": round(float(test_f1), 4),
+        "precision": round(float(cm[1, 1] / max(cm[1, 1] + cm[0, 1], 1)), 4),
+        "recall": round(float(cm[1, 1] / max(cm[1, 1] + cm[1, 0], 1)), 4),
         "train_time_seconds": round(elapsed, 2),
         "confusion_matrix": {
             "tn": int(cm[0, 0]), "fp": int(cm[0, 1]),
             "fn": int(cm[1, 0]), "tp": int(cm[1, 1]),
         },
+        "validation_metrics": {
+            "auc_pr": round(float(val_auc_pr), 4),
+            "f1": round(float(val_f1), 4),
+            "precision": round(float(val_precision), 4),
+            "recall": round(float(val_recall), 4),
+        },
     }
+
+    return rf, best_threshold, metrics
 
 
 def export_model(rf, scaler, feature_cols, metrics, threshold):
@@ -362,17 +374,51 @@ def export_model(rf, scaler, feature_cols, metrics, threshold):
         print(f"  {f.name}: {f.stat().st_size / 1024:.1f} KB")
 
 
+def export_pipeline_csv(events: list, output_path: Path):
+    print(f"\n[EXPORT] Saving pipeline test set ({len(events)} rows) to {output_path}")
+    with output_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            "step", "type", "amount", "nameOrig", "oldbalanceOrg",
+            "newbalanceOrig", "nameDest", "oldbalanceDest", "newbalanceDest", "isFraud",
+        ])
+        writer.writeheader()
+        for ev in events:
+            writer.writerow({
+                "step": str(ev.step),
+                "type": ev.txn_type,
+                "amount": f"{ev.amount:.2f}",
+                "nameOrig": ev.name_orig,
+                "oldbalanceOrg": f"{ev.oldbalance_org:.2f}",
+                "newbalanceOrig": f"{ev.newbalance_orig:.2f}",
+                "nameDest": ev.name_dest,
+                "oldbalanceDest": f"{ev.oldbalance_dest:.2f}",
+                "newbalanceDest": f"{ev.newbalance_dest:.2f}",
+                "isFraud": str(ev.is_fraud),
+            })
+    print(f"  File size: {output_path.stat().st_size / 1024:.1f} KB")
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Train Fraud Detection ML Model")
     parser.add_argument("--csv-path", required=True, help="Path to PaySim CSV dataset")
-    parser.add_argument("--limit", type=int, default=10000, help="Number of rows to use (default: 10000)")
-    parser.add_argument("--test-size", type=float, default=0.2, help="Test set ratio (default: 0.2)")
+    parser.add_argument("--limit", type=int, default=None, help="Number of rows to use (default: all)")
+    parser.add_argument("--train-ratio", type=float, default=0.70, help="Train set ratio (default: 0.70)")
+    parser.add_argument("--val-ratio", type=float, default=0.15, help="Validation set ratio (default: 0.15)")
+    parser.add_argument("--test-ratio", type=float, default=0.10, help="ML test set ratio (default: 0.10)")
+    parser.add_argument("--pipeline-ratio", type=float, default=0.05, help="Pipeline E2E test ratio (default: 0.05)")
     parser.add_argument("--skip-eda", action="store_true", help="Skip EDA phase")
+    parser.add_argument("--pipeline-out", type=str, default=None, help="Output CSV path for pipeline test set")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+
+    ratios = [args.train_ratio, args.val_ratio, args.test_ratio, args.pipeline_ratio]
+    total = sum(ratios)
+    if abs(total - 1.0) > 0.001:
+        print(f"[ERROR] Ratios must sum to 1.0 (got {total:.4f})")
+        raise SystemExit(1)
 
     events = load_events(args.csv_path, args.limit)
 
@@ -381,30 +427,59 @@ def main():
     if not args.skip_eda:
         run_eda(X, y, txn_types, feature_cols)
 
-    print("\n[STEP] Splitting data (time-based: first 80% train, last 20% test)...")
-    split_idx = int(len(X) * (1 - args.test_size))
-    X_train, X_test = X[:split_idx], X[split_idx:]
-    y_train, y_test = y[:split_idx], y[split_idx:]
+    n = len(events)
+    idx_train = int(n * args.train_ratio)
+    idx_val = int(n * (args.train_ratio + args.val_ratio))
+    idx_test = int(n * (args.train_ratio + args.val_ratio + args.test_ratio))
 
-    from sklearn.preprocessing import StandardScaler
+    print(f"\n[STEP] Time-based chronological split:")
+    print(f"  Train    ({args.train_ratio:.0%})  : rows 0 .. {idx_train:,} "
+          f"(step {events[0].step} .. {events[min(idx_train-1, n-1)].step})")
+    print(f"  Val      ({args.val_ratio:.0%})  : rows {idx_train:,} .. {idx_val - 1:,} "
+          f"(step {events[idx_train].step} .. {events[idx_val-1].step})")
+    print(f"  ML Test  ({args.test_ratio:.0%})  : rows {idx_val:,} .. {idx_test - 1:,} "
+          f"(step {events[idx_val].step} .. {events[idx_test-1].step})")
+    print(f"  Pipeline ({args.pipeline_ratio:.0%})  : rows {idx_test:,} .. {n - 1:,} "
+          f"(step {events[idx_test].step} .. {events[-1].step})")
+
+    train_events = events[:idx_train]
+    val_events = events[idx_train:idx_val]
+    test_events = events[idx_val:idx_test]
+    pipeline_events = events[idx_test:]
+
+    train_indices = list(range(idx_train))
+    val_indices = list(range(idx_train, idx_val))
+    test_indices = list(range(idx_val, idx_test))
+
+    X_train, y_train = X[train_indices], y[train_indices]
+    X_val, y_val = X[val_indices], y[val_indices]
+    X_test, y_test = X[test_indices], y[test_indices]
+
     scaler = StandardScaler()
-    X_train = scaler.fit_transform(X_train)
-    X_test = scaler.transform(X_test)
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_val_scaled = scaler.transform(X_val)
+    X_test_scaled = scaler.transform(X_test)
 
-    rf_model, best_threshold, metrics = train_model(X_train, y_train, X_test, y_test, feature_cols)
+    rf_model, best_threshold, metrics = train_model(
+        X_train_scaled, y_train, X_val_scaled, y_val, X_test_scaled, y_test, feature_cols
+    )
 
     export_model(rf_model, scaler, feature_cols, metrics, best_threshold)
+
+    pipeline_out = args.pipeline_out or str(MODEL_DIR / "pipeline_test_set.csv")
+    export_pipeline_csv(pipeline_events, Path(pipeline_out))
 
     print("\n" + "=" * 60)
     print("TRAINING PIPELINE COMPLETED SUCCESSFULLY")
     print("=" * 60)
     print(f"\nModel version: v1_paysim_rf")
-    print(f"Optimal threshold: {best_threshold:.4f}")
-    print(f"AUC-ROC: {metrics['auc_roc']:.4f}")
-    print(f"AUC-PR:  {metrics['auc_pr']:.4f}")
-    print(f"F1:      {metrics['f1_score']:.4f}")
+    print(f"Optimal threshold: {best_threshold:.4f} (tuned on validation set)")
+    print(f"Test AUC-ROC: {metrics['auc_roc']:.4f}")
+    print(f"Test AUC-PR:  {metrics['auc_pr']:.4f}")
+    print(f"Test F1:      {metrics['f1_score']:.4f}")
     print(f"\nPlots saved to: {PLOTS_DIR}")
     print(f"Model artifacts: {MODEL_DIR}")
+    print(f"Pipeline test set: {pipeline_out}")
 
 
 if __name__ == "__main__":
