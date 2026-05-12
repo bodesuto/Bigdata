@@ -60,12 +60,14 @@
 - **9.2. Độ trễ (Latency):** Thời gian xử lý trung bình mỗi mẻ (Batch duration).
 - **9.3. Exactly-once:** Chứng minh tính toàn vẹn dữ liệu qua Checkpointing.
 - **9.4. Tối ưu hóa:** Xử lý Data Skew và Latency Reduction.
+- **9.5. Phân tích thực nghiệm:** So sánh hiệu năng giữa các tham số Trigger khác nhau (Default vs 2s vs 10s).
 
 ## 10. Thảo Luận & Đánh Giá (Discussion)
 - **10.1. Ưu điểm:** Tính ổn định, khả năng quan sát tốt.
 - **10.2. Hạn chế:** Phụ thuộc vào dữ liệu giả lập, độ phức tạp của môi trường Docker.
 - **10.3. Đánh đổi:** Cân bằng giữa tốc độ xử lý và độ chính xác của Model.
 - **10.4. Bảo mật & Quyền riêng tư:** Cách hệ thống xử lý ẩn danh dữ liệu khách hàng (Anonymization) và bảo vệ Kafka/Cassandra.
+- **10.5. Đạo đức & Định kiến (Ethical Considerations):** Phân tích tác động của việc nhầm lẫn (False Positives) đối với trải nghiệm khách hàng.
 
 ## 11. Kết Luận & Hướng Phát Triển (Conclusion)
 - **11.1. Tổng kết:** Những gì dự án đã đạt được so với mục tiêu đề ra.
