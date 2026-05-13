@@ -10,6 +10,7 @@ RUN python3 -m pip install --no-cache-dir \
 WORKDIR /opt/project
 
 COPY fraud_pipeline /opt/project/fraud_pipeline
+COPY model /opt/project/model
 COPY spark-app /opt/project/spark-app-build
 
 ENV PYTHONPATH=/opt/project:/opt/spark/app
