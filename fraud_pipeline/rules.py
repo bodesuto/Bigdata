@@ -13,7 +13,8 @@ try:
     from model.model_utils import predict_proba, model_is_loaded, get_model_version, get_threshold
     _ML_AVAILABLE = True
 except ImportError:
-    LOGGER.exception("ML runtime unavailable: failed to import model utilities")
+    LOGGER.exception(
+        "ML runtime unavailable: failed to import model utilities")
     _ML_AVAILABLE = False
 
 
@@ -65,13 +66,15 @@ class RuleEngine:
             triggered_rules.append("cashout_after_inbound_chain")
             weights.append(self.config.cashout_after_inbound_weight)
 
-        rule_risk_score = 1 - prod(1 - weight for weight in weights) if weights else 0.0
+        rule_risk_score = 1 - \
+            prod(1 - weight for weight in weights) if weights else 0.0
 
         ml_score = self._predict_ml_score(event)
         ml_version = get_model_version() if _ML_AVAILABLE else "v0"
         threshold = get_threshold() if _ML_AVAILABLE else 0.85
 
-        combined_risk_score = min((rule_risk_score * 0.6) + (ml_score * 0.4), 1.0)
+        combined_risk_score = min(
+            (rule_risk_score * 0.6) + (ml_score * 0.4), 1.0)
         is_alert = bool(triggered_rules) or ml_score >= threshold
         severity = "high" if combined_risk_score >= 0.65 else "medium" if combined_risk_score >= 0.35 else "low"
 
@@ -91,7 +94,8 @@ class RuleEngine:
         try:
             return predict_proba(event)
         except Exception:
-            LOGGER.exception("ML prediction failed for event_id=%s", event.event_id)
+            LOGGER.exception(
+                "ML prediction failed for event_id=%s", event.event_id)
             return 0.0
 
     def _is_account_drain_near_zero(self, event: TransactionEvent) -> bool:
@@ -178,7 +182,8 @@ class RuleEngine:
     def _has_cashout_after_inbound_chain(self, event: TransactionEvent, recent_inbound_events: list[TransactionEvent]) -> bool:
         if event.txn_type != "CASH_OUT":
             return False
-        window_start = event.event_time.timestamp() - self.config.cashout_after_inbound_window_seconds
+        window_start = event.event_time.timestamp(
+        ) - self.config.cashout_after_inbound_window_seconds
         matching = [
             item
             for item in recent_inbound_events
