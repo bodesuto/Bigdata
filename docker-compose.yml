@@ -224,7 +224,7 @@ services:
     volumes:
       - ./fraud_pipeline:/opt/project/fraud_pipeline
       - ./spark-app:/opt/spark/app
-      - ./model:/opt/spark/model
+      - ./model:/opt/project/model
       - spark_events:/tmp/spark-events
       - spark_checkpoints:/tmp/spark_checkpoints
     ports:
