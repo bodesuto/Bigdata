@@ -19,6 +19,7 @@ from sklearn.metrics import (
     roc_auc_score,
     roc_curve,
 )
+from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -193,11 +194,11 @@ def train_model(X_train, y_train, X_val, y_val, X_test, y_test, feature_cols):
     print(f"Test:  {len(y_test):,} samples ({n_fraud_test:,} fraud, {n_fraud_test/len(y_test)*100:.3f}%)")
 
     print(f"\n[STEP] Applying SMOTE on training set...")
-    smote = SMOTE(random_state=42)
+    smote = SMOTE(sampling_strategy=0.1, random_state=42)
     X_train_res, y_train_res = smote.fit_resample(X_train, y_train)
     n_resampled = int(y_train_res.sum())
     print(f"  Train before SMOTE: {len(X_train):,} ({n_fraud_train:,} fraud)")
-    print(f"  Train after SMOTE:  {len(X_train_res):,} ({n_resampled:,} fraud)")
+    print(f"  Train after SMOTE:  {len(X_train_res):,} ({n_resampled:,} fraud, {n_resampled/len(X_train_res)*100:.1f}%)")
 
     print(f"\n[STEP] Training Random Forest...")
     rf = RandomForestClassifier(
@@ -374,8 +375,8 @@ def export_model(rf, scaler, feature_cols, metrics, threshold):
         print(f"  {f.name}: {f.stat().st_size / 1024:.1f} KB")
 
 
-def export_pipeline_csv(events: list, output_path: Path):
-    print(f"\n[EXPORT] Saving pipeline test set ({len(events)} rows) to {output_path}")
+def export_test_csv(events: list, output_path: Path):
+    print(f"\n[EXPORT] Saving test set ({len(events)} rows) to {output_path}")
     with output_path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
             "step", "type", "amount", "nameOrig", "oldbalanceOrg",
@@ -402,19 +403,17 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train Fraud Detection ML Model")
     parser.add_argument("--csv-path", required=True, help="Path to PaySim CSV dataset")
     parser.add_argument("--limit", type=int, default=None, help="Number of rows to use (default: all)")
-    parser.add_argument("--train-ratio", type=float, default=0.70, help="Train set ratio (default: 0.70)")
-    parser.add_argument("--val-ratio", type=float, default=0.15, help="Validation set ratio (default: 0.15)")
-    parser.add_argument("--test-ratio", type=float, default=0.10, help="ML test set ratio (default: 0.10)")
-    parser.add_argument("--pipeline-ratio", type=float, default=0.05, help="Pipeline E2E test ratio (default: 0.05)")
+    parser.add_argument("--train-ratio", type=float, default=0.60, help="Train set ratio (default: 0.60)")
+    parser.add_argument("--val-ratio", type=float, default=0.20, help="Validation set ratio (default: 0.20)")
+    parser.add_argument("--test-ratio", type=float, default=0.20, help="Test set ratio (default: 0.20)")
     parser.add_argument("--skip-eda", action="store_true", help="Skip EDA phase")
-    parser.add_argument("--pipeline-out", type=str, default=None, help="Output CSV path for pipeline test set")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
 
-    ratios = [args.train_ratio, args.val_ratio, args.test_ratio, args.pipeline_ratio]
+    ratios = [args.train_ratio, args.val_ratio, args.test_ratio]
     total = sum(ratios)
     if abs(total - 1.0) > 0.001:
         print(f"[ERROR] Ratios must sum to 1.0 (got {total:.4f})")
@@ -427,33 +426,23 @@ def main():
     if not args.skip_eda:
         run_eda(X, y, txn_types, feature_cols)
 
-    n = len(events)
-    idx_train = int(n * args.train_ratio)
-    idx_val = int(n * (args.train_ratio + args.val_ratio))
-    idx_test = int(n * (args.train_ratio + args.val_ratio + args.test_ratio))
+    print(f"\n[STEP] Stratified random split ({args.train_ratio:.0%}/{args.val_ratio:.0%}/{args.test_ratio:.0%})...")
 
-    print(f"\n[STEP] Time-based chronological split:")
-    print(f"  Train    ({args.train_ratio:.0%})  : rows 0 .. {idx_train:,} "
-          f"(step {events[0].step} .. {events[min(idx_train-1, n-1)].step})")
-    print(f"  Val      ({args.val_ratio:.0%})  : rows {idx_train:,} .. {idx_val - 1:,} "
-          f"(step {events[idx_train].step} .. {events[idx_val-1].step})")
-    print(f"  ML Test  ({args.test_ratio:.0%})  : rows {idx_val:,} .. {idx_test - 1:,} "
-          f"(step {events[idx_val].step} .. {events[idx_test-1].step})")
-    print(f"  Pipeline ({args.pipeline_ratio:.0%})  : rows {idx_test:,} .. {n - 1:,} "
-          f"(step {events[idx_test].step} .. {events[-1].step})")
+    val_test_ratio = args.val_ratio + args.test_ratio
+    events_train, events_temp, X_train, X_temp, y_train, y_temp = train_test_split(
+        events, X, y, test_size=val_test_ratio, random_state=42, stratify=y
+    )
+    test_size_adjusted = args.test_ratio / val_test_ratio
+    events_val, events_test, X_val, X_test, y_val, y_test = train_test_split(
+        events_temp, X_temp, y_temp, test_size=test_size_adjusted, random_state=42, stratify=y_temp
+    )
 
-    train_events = events[:idx_train]
-    val_events = events[idx_train:idx_val]
-    test_events = events[idx_val:idx_test]
-    pipeline_events = events[idx_test:]
-
-    train_indices = list(range(idx_train))
-    val_indices = list(range(idx_train, idx_val))
-    test_indices = list(range(idx_val, idx_test))
-
-    X_train, y_train = X[train_indices], y[train_indices]
-    X_val, y_val = X[val_indices], y[val_indices]
-    X_test, y_test = X[test_indices], y[test_indices]
+    n_fraud_train = int(y_train.sum())
+    n_fraud_val = int(y_val.sum())
+    n_fraud_test = int(y_test.sum())
+    print(f"  Train: {len(y_train):,} samples ({n_fraud_train:,} fraud, {n_fraud_train/len(y_train)*100:.3f}%)")
+    print(f"  Val:   {len(y_val):,} samples ({n_fraud_val:,} fraud, {n_fraud_val/len(y_val)*100:.3f}%)")
+    print(f"  Test:  {len(y_test):,} samples ({n_fraud_test:,} fraud, {n_fraud_test/len(y_test)*100:.3f}%)")
 
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
@@ -466,8 +455,8 @@ def main():
 
     export_model(rf_model, scaler, feature_cols, metrics, best_threshold)
 
-    pipeline_out = args.pipeline_out or str(MODEL_DIR / "pipeline_test_set.csv")
-    export_pipeline_csv(pipeline_events, Path(pipeline_out))
+    test_csv_path = MODEL_DIR / "test_set.csv"
+    export_test_csv(events_test, test_csv_path)
 
     print("\n" + "=" * 60)
     print("TRAINING PIPELINE COMPLETED SUCCESSFULLY")
@@ -479,7 +468,7 @@ def main():
     print(f"Test F1:      {metrics['f1_score']:.4f}")
     print(f"\nPlots saved to: {PLOTS_DIR}")
     print(f"Model artifacts: {MODEL_DIR}")
-    print(f"Pipeline test set: {pipeline_out}")
+    print(f"Test set: {test_csv_path}")
 
 
 if __name__ == "__main__":
