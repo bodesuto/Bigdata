@@ -197,45 +197,33 @@ services:
       retries: 10
       start_period: 30s
 
-  spark-app:
+  flink-app:
     build:
       context: .
-      dockerfile: spark-app/Dockerfile
-    container_name: spark-fraud-detection
+      dockerfile: flink-app/Dockerfile
+    container_name: flink-fraud-detection
     restart: on-failure
     depends_on:
-      spark-master:
-        condition: service_healthy
+      flink-jobmanager:
+        condition: service_started
       kafka:
         condition: service_healthy
       cassandra:
         condition: service_healthy
       redis:
         condition: service_healthy
-      kafka-init:
-        condition: service_completed_successfully
-      cassandra-init:
-        condition: service_completed_successfully
     environment:
-      SPARK_MASTER: spark://spark-master:7077
+      FLINK_JOBMANAGER_HOST: flink-jobmanager
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       CASSANDRA_HOST: cassandra
-      CASSANDRA_PORT: 9042
-      CASSANDRA_KEYSPACE: fraud_detection
       REDIS_HOST: redis
       REDIS_PORT: 6379
-      SPARK_DRIVER_MEMORY: 1g
-      SPARK_EXECUTOR_MEMORY: 1g
-      PIPELINE_STARTING_OFFSETS: earliest
-      PYTHONUNBUFFERED: 1
     volumes:
       - ./fraud_pipeline:/opt/project/fraud_pipeline
-      - ./spark-app:/opt/spark/app
+      - ./flink-app:/opt/project/flink-app
       - ./model:/opt/project/model
-      - spark_events:/tmp/spark-events
-      - spark_checkpoints:/tmp/spark_checkpoints
     ports:
-      - "4040:4040"
+      - "8082:8081" # Flink Web UI proxy if needed
 
   streamlit:
     build:
@@ -259,6 +247,33 @@ services:
       timeout: 10s
       retries: 10
       start_period: 40s
+
+  flink-jobmanager:
+    image: flink:1.17.1-scala_2.12
+    container_name: flink-jobmanager
+    ports:
+      - "8081:8081"
+    command: jobmanager
+    networks:
+      - bigdata-network
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: flink-jobmanager
+
+  flink-taskmanager:
+    image: flink:1.17.1-scala_2.12
+    container_name: flink-taskmanager
+    depends_on:
+      - flink-jobmanager
+    command: taskmanager
+    networks:
+      - bigdata-network
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 4
 
   prometheus:
     image: prom/prometheus:v2.47.0
