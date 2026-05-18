@@ -12,10 +12,10 @@ RUN python3 -m pip install --no-cache-dir \
     cassandra-driver \
     redis \
     kafka-python \
-    numpy==1.24.4 \
-    joblib==1.4.2 \
-    scikit-learn==1.3.2 \
-    pandas==2.0.3
+    numpy \
+    joblib \
+    scikit-learn \
+    pandas==1.3.5
 
 # Download connectors
 ENV FLINK_LIB_DIR=/opt/flink/lib
