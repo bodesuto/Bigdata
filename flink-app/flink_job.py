@@ -39,7 +39,7 @@ def run_flink_production_job():
             name_orig STRING,
             name_dest STRING,
             event_time TIMESTAMP(3),
-            WATERMARK FOR event_time AS event_time - INTERVAL '10' SECOND
+            WATERMARK FOR event_time AS event_time - INTERVAL '30' SECOND
         ) WITH (
             'connector' = 'kafka',
             'topic' = 'transaction_topic',
@@ -57,7 +57,7 @@ def run_flink_production_job():
             oldbalance_org DOUBLE,
             newbalance_orig DOUBLE,
             event_time TIMESTAMP(3),
-            WATERMARK FOR event_time AS event_time - INTERVAL '10' SECOND
+            WATERMARK FOR event_time AS event_time - INTERVAL '30' SECOND
         ) WITH (
             'connector' = 'kafka',
             'topic' = 'sender_state_topic',
@@ -73,7 +73,7 @@ def run_flink_production_job():
             oldbalance_dest DOUBLE,
             newbalance_dest DOUBLE,
             event_time TIMESTAMP(3),
-            WATERMARK FOR event_time AS event_time - INTERVAL '10' SECOND
+            WATERMARK FOR event_time AS event_time - INTERVAL '30' SECOND
         ) WITH (
             'connector' = 'kafka',
             'topic' = 'receiver_state_topic',
@@ -120,9 +120,9 @@ def run_flink_production_job():
             R.oldbalance_dest, R.newbalance_dest
         FROM tx_source T
         JOIN sender_source S ON T.event_id = S.event_id 
-            AND S.event_time BETWEEN T.event_time - INTERVAL '10' SECOND AND T.event_time + INTERVAL '10' SECOND
+            AND S.event_time BETWEEN T.event_time - INTERVAL '30' SECOND AND T.event_time + INTERVAL '30' SECOND
         JOIN receiver_source R ON T.event_id = R.event_id
-            AND R.event_time BETWEEN T.event_time - INTERVAL '10' SECOND AND T.event_time + INTERVAL '10' SECOND
+            AND R.event_time BETWEEN T.event_time - INTERVAL '30' SECOND AND T.event_time + INTERVAL '30' SECOND
     """)
 
     # Convert to DataStream for complex Python rules
